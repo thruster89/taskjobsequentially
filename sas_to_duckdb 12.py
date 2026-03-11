@@ -1,27 +1,31 @@
 """
-SAS → DuckDB 전환 파이프라인
+SAS → DuckDB 전환 파이프라인 (단순화 버전)
+
+실행 예시:
+  python "sas_to_duckdb 12.py" --ym 202601 --stage load logic validate export
+  python "sas_to_duckdb 12.py" --ym 202601 --stage load --tables erp sa01
+  python "sas_to_duckdb 12.py" --ym 202601 --stage logic validate export
+  python "sas_to_duckdb 12.py" --list
 """
 
+import re
 import sys
 import logging
 import time
+import argparse
+import unicodedata
 from pathlib import Path
 from datetime import datetime
 
 # ══════════════════════════════════════════════
 # 로거 설정
-#   - 콘솔: INFO 이상
-#   - 파일: DEBUG 이상 (logs/YYYYMMDD_HHMMSS.log)
 # ══════════════════════════════════════════════
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger("pipeline")
     logger.setLevel(logging.DEBUG)
 
     class AlignedFormatter(logging.Formatter):
-        """[LEVEL] 부분을 고정 너비로 맞춰 메시지 시작 위치를 통일"""
-        # CRITICAL 이 가장 길어서 기준 (len("[CRITICAL]") = 10)
         _WIDTH = len("[CRITICAL]")
-
         def format(self, record):
             bracket = f"[{record.levelname}]"
             record.bracket = f"{bracket:<{self._WIDTH}}"
@@ -32,13 +36,11 @@ def setup_logger() -> logging.Logger:
         datefmt = "%Y-%m-%d %H:%M:%S",
     )
 
-    # 콘솔 핸들러
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(logging.INFO)
     ch.setFormatter(fmt)
     logger.addHandler(ch)
 
-    # 파일 핸들러 (logs/ 폴더 자동 생성)
     log_dir = Path(__file__).parent / "logs"
     log_dir.mkdir(exist_ok=True)
     log_file = log_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -51,7 +53,6 @@ def setup_logger() -> logging.Logger:
     return logger
 
 log = setup_logger()
-
 
 # ── 의존성 체크 ───────────────────────────────
 log.info(f"Python {sys.version.split()[0]}")
@@ -77,48 +78,24 @@ except ImportError:
     log.critical("dat_loader.py 없음 → sas_to_duckdb.py 와 같은 폴더에 있어야 함")
     sys.exit(1)
 
-# ══════════════════════════════════════════════
-# 0. 기본 설정
-# ══════════════════════════════════════════════
-# ⚠ YYYYMM 은 --yyyymm 인자로 덮어씌울 수 있음 (기본값: 아래)
-YYYYMM    = "202601"
 
+# ══════════════════════════════════════════════
+# 0. 설정
+# ══════════════════════════════════════════════
 ROOT      = Path(__file__).parent
-BASE_PATH = ROOT / "data" / YYYYMM
-OUT_DIR   = ROOT / "output"
-DB_PATH   = ROOT / "db"    / f"{YYYYMM}.duckdb"
-
-# 인코딩 시도 순서 — 실패 시 다음으로 자동 fallback
 ENCODINGS = ["cp949", "utf-8"]
 
-# output / db 폴더 없으면 자동 생성 (init() 에서 재실행)
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+# 파일 확장자 탐색 순서
+FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
 
-
-def init(yyyymm: str):
-    """YYYYMM 기반 경로 전역변수 재설정 — main() 에서 호출"""
-    global YYYYMM, BASE_PATH, DB_PATH
-    YYYYMM    = yyyymm
-    BASE_PATH = ROOT / "data" / YYYYMM
-    DB_PATH   = ROOT / "db"   / f"{YYYYMM}.duckdb"
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    log.info(f"대상 월   : {YYYYMM}")
-    log.info(f"데이터    : {BASE_PATH}")
-    log.info(f"DB        : {DB_PATH}")
+# 테이블 네임스페이스 규칙
+PREFIX_VALIDATE = "val_"   # 검증용 임시 → validate 후 자동 DROP
+PREFIX_EXPORT   = "out_"   # Excel 출력 대상 → 시트명 = out_ 뗀 이름
 
 
 # ══════════════════════════════════════════════
 # 1. 테이블 레지스트리
-#    새 파일 추가 시 여기만 수정
 # ══════════════════════════════════════════════
-#
-# type  : "fwf"  → 고정폭(fixed-width)
-#         "pipe" → 파이프(|) 구분자
-#
-# fwf  cols : [(시작, 끝), "컬럼명"]  목록
-# pipe cols : ["컬럼명", ...]          순서대로
-#
 TABLE_REGISTRY = {
 
     # ── 유형A: 고정폭 ──────────────────────────────────────────────
@@ -374,9 +351,7 @@ TABLE_REGISTRY = {
     },
 }
 
-# ══════════════════════════════════════════════
-# 2. 숫자형 캐스팅 대상 (테이블별)
-# ══════════════════════════════════════════════
+# 숫자형 캐스팅 대상 (테이블별)
 NUMERIC_COLS = {
     "fio841": ["INCM_PRM_CR_SEQNO", "PYM_SEQ", "RP_PRM", "AF_PRM",
                "CONDT_I_PRM", "MDF_CVAV", "MPY_CV_PRM"],
@@ -393,137 +368,118 @@ NUMERIC_COLS = {
 
 
 # ══════════════════════════════════════════════
-# 3. 로더 (유형A / 유형B 공용)
-#    .DAT / .DAT.gz / .zip(DAT 1개) 자동 처리
+# 2. 유틸
 # ══════════════════════════════════════════════
 
-
-# 확장자 자동 탐색 순서
-FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
-
-def resolve_path(base: Path, file_template: str) -> Path:
-    """
-    file_template 의 확장자를 FILE_EXTENSIONS 순서로 바꿔가며
-    실제 존재하는 파일을 찾아 반환. 없으면 FileNotFoundError.
-    """
-    stem = Path(file_template.format(YYYYMM=YYYYMM)).stem  # 확장자 제거한 파일명
-    # .dat.gz 처럼 두 단계 확장자 처리
-    if stem.lower().endswith(".dat"):
-        stem = stem[:-4]
-
-    candidates = [base / f"{stem}{ext}" for ext in FILE_EXTENSIONS]
-
-    log.debug(f"파일 탐색 위치: {base}")
-    for c in candidates:
-        if c.exists():
-            log.debug(f"  발견: {c.name}")
-            return c
-        else:
-            log.debug(f"  없음: {c.name}")
-
-    msg = (f"파일을 찾을 수 없음: {stem}.* | "
-           f"탐색 위치: {base} | "
-           f"시도한 파일: {[c.name for c in candidates]}")
-    log.error(msg)
-    raise FileNotFoundError(msg)
-
-
-def load_table(name: str, cfg: dict) -> pd.DataFrame:
-    path = resolve_path(BASE_PATH, cfg["file"])
-    log.info(f"[{name}] {cfg['desc']}  ← {path.name}")
-    t0 = time.time()
-
-    if cfg["type"] == "fwf":
-        df = read_fwf_dat(
-            path,
-            col_defs  = cfg["cols"],
-            numeric   = NUMERIC_COLS.get(name, []),
-            encodings = ENCODINGS,
-        )
-    elif cfg["type"] == "pipe":
-        df = read_pipe_dat(
-            path,
-            col_names = cfg["cols"],
-            numeric   = NUMERIC_COLS.get(name, []),
-            encodings = ENCODINGS,
-            delimiter = cfg.get("delimiter", "|"),  # csv면 "," 지정 가능
-        )
-    elif cfg["type"] == "sas7bdat":
-        # 헤더는 파일 내부에서 자동 추출 — cols 정의 불필요
-        df = read_sas7bdat_file(
-            path,
-            numeric  = NUMERIC_COLS.get(name, []),
-            encoding = cfg.get("encoding", "cp949"),
-        )
-    else:
-        raise ValueError(f"Unknown type: {cfg['type']}")
-
-    elapsed = time.time() - t0
-    log.info(f"[{name}] {len(df):,}건 로드 완료  ({elapsed:.1f}초)")
-    return df
-
-
-# ══════════════════════════════════════════════
-# 4. 비즈니스 로직 (SAS → SQL 변환)
-# ══════════════════════════════════════════════
-
-# ── 테이블 네임스페이스 규칙 ──────────────────────────────────────
-#
-#  접두사 없음  : 배분 결과 — 영구 보존
-#                 예) BASE_DATA_CH, sa_202601, sa11, sa20
-#
-#  val_ 접두사 : 검증용 임시 테이블
-#                 예) val_TEMP00, val_PY_IBAMT_CH
-#                 → step_validate 완료 시 자동 DROP
-#                 → 0건이어야 정상인 검증 쿼리에 사용
-#
-#  out_ 접두사 : Excel 출력 대상 테이블
-#                 예) out_시산표비교, out_취급기관검증
-#                 → step_export 때 자동으로 시트로 뽑힘
-#                 → 시트명 = out_ 뗀 이름
-#                 → 결과가 있어야 하거나 나중에 확인이 필요한 경우
-#
-# ─────────────────────────────────────────────────────────────────
-
-PREFIX_VALIDATE = "val_"   # 검증용 임시 → step_validate 후 자동 DROP
-PREFIX_EXPORT   = "out_"   # Excel 출력 대상 → step_export 때 자동으로 시트로 뽑힘
-                           #   시트명 = out_ 뗀 이름  (out_시산표비교 → 시트명 "시산표비교")
-
-
-def _drop_by_prefix(con, prefix: str):
-    """해당 prefix 로 시작하는 테이블 전체 DROP"""
-    tbls = [r[0] for r in con.execute(
-        "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema='main'"
-    ).fetchall() if r[0].startswith(prefix)]
-    for t in tbls:
-        con.execute(f"DROP TABLE IF EXISTS {t}")
-        log.debug(f"DROP TABLE {t}")
-    if tbls:
-        log.info(f"임시 테이블 정리: {tbls}")
+def _display_width(s):
+    """한글 포함 문자열의 터미널 표시 너비"""
+    return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in s)
 
 
 def _exec(con, label: str, sql: str):
-    """SQL 실행 + 결과 건수 로깅"""
+    """SQL 실행 + CREATE TABLE이면 건수 로깅"""
     t = time.time()
     con.execute(sql)
-    # CREATE TABLE 이면 건수 조회
-    import re
     m = re.search(r"CREATE\s+OR\s+REPLACE\s+TABLE\s+(\w+)", sql, re.IGNORECASE)
     if m:
         tbl = m.group(1)
         cnt = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-        # 한글은 터미널에서 2칸 차지 → 실제 표시 너비 계산 후 패딩
-        import unicodedata
-        def _display_width(s):
-            return sum(2 if unicodedata.east_asian_width(c) in ('W','F') else 1 for c in s)
-        _PAD = 50
-        label_padded = label + " " * max(0, _PAD - _display_width(label))
+        pad = 50
+        label_padded = label + " " * max(0, pad - _display_width(label))
         log.info(f"  {label_padded}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
 
 
-def run_business_logic(con: duckdb.DuckDBPyConnection):
-    """배분 비즈니스 로직 (SAS → DuckDB SQL 변환)"""
+def resolve_path(base: Path, file_template: str, yyyymm: str) -> Path:
+    """파일 템플릿에서 확장자를 바꿔가며 실제 존재하는 파일 찾기"""
+    stem = Path(file_template.format(YYYYMM=yyyymm)).stem
+    if stem.lower().endswith(".dat"):
+        stem = stem[:-4]
+
+    for ext in FILE_EXTENSIONS:
+        candidate = base / f"{stem}{ext}"
+        if candidate.exists():
+            log.debug(f"  발견: {candidate.name}")
+            return candidate
+
+    raise FileNotFoundError(f"파일 없음: {stem}.* (탐색 위치: {base})")
+
+
+# ══════════════════════════════════════════════
+# 3. LOAD — DAT 파일 → DuckDB 테이블
+# ══════════════════════════════════════════════
+
+def step_load(con, yyyymm: str, tables: list = None):
+    """DAT 파일을 읽어 DuckDB 테이블로 적재 (CREATE OR REPLACE)"""
+    base_path = ROOT / "data" / yyyymm
+    target = {k: v for k, v in TABLE_REGISTRY.items()
+              if not tables or k in tables}
+
+    t0 = time.time()
+    log.info("=" * 55)
+    log.info(f"[LOAD] 시작  (월: {yyyymm}, 대상: {list(target.keys())})")
+    log.info("=" * 55)
+
+    loaded, failed = [], []
+
+    for name, cfg in target.items():
+        try:
+            path = resolve_path(base_path, cfg["file"], yyyymm)
+            log.info(f"[{name}] {cfg['desc']}  ← {path.name}")
+            ts = time.time()
+
+            if cfg["type"] == "fwf":
+                df = read_fwf_dat(path, cfg["cols"],
+                                  numeric=NUMERIC_COLS.get(name, []),
+                                  encodings=ENCODINGS)
+            elif cfg["type"] == "pipe":
+                df = read_pipe_dat(path, cfg["cols"],
+                                   numeric=NUMERIC_COLS.get(name, []),
+                                   encodings=ENCODINGS,
+                                   delimiter=cfg.get("delimiter", "|"))
+            elif cfg["type"] == "sas7bdat":
+                df = read_sas7bdat_file(path,
+                                        numeric=NUMERIC_COLS.get(name, []),
+                                        encoding=cfg.get("encoding", "cp949"))
+            else:
+                raise ValueError(f"Unknown type: {cfg['type']}")
+
+            con.register(f"_df_{name}", df)
+            con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM _df_{name}")
+            cnt = len(df)
+            log.info(f"[{name}] {cnt:,}건 적재 완료  ({time.time()-ts:.1f}초)")
+            loaded.append(name)
+
+        except FileNotFoundError as e:
+            log.warning(f"[{name}] 파일 없음 — 건너뜀  ({e})")
+            failed.append(name)
+        except Exception as e:
+            log.error(f"[{name}] 로드 실패: {type(e).__name__}: {e}")
+            failed.append(name)
+
+    log.info(f"[LOAD] 완료  성공: {loaded}  실패: {failed}  소요: {time.time()-t0:.1f}초")
+    return loaded
+
+
+# ══════════════════════════════════════════════
+# 4. LOGIC — 비즈니스 로직 (SAS → SQL 변환)
+# ══════════════════════════════════════════════
+
+def step_logic(con, yyyymm: str):
+    """배분 비즈니스 로직 실행"""
+    t0 = time.time()
+    log.info("=" * 55)
+    log.info("[LOGIC] 배분 로직 실행 시작")
+    log.info("=" * 55)
+
+    # 필수 테이블 확인
+    existing = {r[0] for r in con.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'main'"
+    ).fetchall()}
+    missing = {"fio841", "fio843", "sa01", "sa02"} - existing
+    if missing:
+        log.warning(f"필수 테이블 없음: {missing} — load 단계를 먼저 실행하세요")
+        return
 
     # ── 841 보험료집계 ────────────────────────
     _exec(con, "BASE_DATA_CH (841 집계)", """
@@ -544,7 +500,7 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
         GROUP BY INS_IMCD
     """)
 
-    # ── 준비금 마감후 보유계약건수 맞춰보기 ──
+    # ── 준비금 마감후 보유계약건수 ──
     _exec(con, "BASE_DATA_CH2 (843 건수집계)", """
         CREATE OR REPLACE TABLE BASE_DATA_CH2 AS
         SELECT  CLS_YYMM
@@ -555,13 +511,12 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
         GROUP BY CLS_YYMM, INS_IMCD
     """)
 
-    # ── D 취급기관 이상 여부 확인 (히스토리 모름) ──
-    _exec(con, "CH (취급기관 이상체크)", f"""
+    # ── 취급기관 이상 여부 확인 ──
+    _exec(con, "CH (취급기관 이상체크)", """
         CREATE OR REPLACE TABLE CH AS
         SELECT DISTINCT DH_ORGCD, DH_STFNO
         FROM fio843
-        WHERE 1=1
-          AND SUBSTR(DH_STFNO, 1, 2) IN ('2S')
+        WHERE SUBSTR(DH_STFNO, 1, 2) IN ('2S')
           AND SUBSTR(DH_ORGCD, 1, 1) NOT IN ('E')
     """)
 
@@ -604,8 +559,8 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
     """)
 
     # ── SA_집계: 최종 배분 집계 ───────────────
-    _exec(con, f"SA_{YYYYMM} (최종 배분집계)", f"""
-        CREATE OR REPLACE TABLE sa_{YYYYMM} AS
+    _exec(con, f"SA_{yyyymm} (최종 배분집계)", f"""
+        CREATE OR REPLACE TABLE sa_{yyyymm} AS
         SELECT DISTINCT
              YYYYMM
             ,NTACC_CD
@@ -625,17 +580,14 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
     # ══════════════════════════════════════════════
 
     # ── 이연액: 신계약비이연액 (RL_CREW_NWCRT * -1) ──
-    # SAS 두 IF문 처리 순서 그대로 반영:
-    #   2번째 IF(11,21,31,42 → 5125030001)가 1번째 IF(11,21,31,41 → 5125010001) 덮어씀
-    #   → 결과: 41→직급, 11/21/31/42→대리점, 12/13/22/32→설계사
     _exec(con, "tmp_TEMP01_01 (이연액 계정매핑)", """
         CREATE OR REPLACE TABLE tmp_TEMP01_01 AS
         SELECT
             '일반관리비'                                        AS GB
            ,CASE
-                WHEN SL_TPCD IN ('11','21','31','42') THEN '5125030001'  /* 신계약비이연액_대리점 */
-                WHEN SL_TPCD = '41'                   THEN '5125010001'  /* 신계약비이연액_직급   */
-                WHEN SL_TPCD IN ('12','13','22','32') THEN '5125050001'  /* 신계약비이연액_설계사 */
+                WHEN SL_TPCD IN ('11','21','31','42') THEN '5125030001'
+                WHEN SL_TPCD = '41'                   THEN '5125010001'
+                WHEN SL_TPCD IN ('12','13','22','32') THEN '5125050001'
             END                                                AS NTACC_CD
            ,CLS_YYMM                                           AS YYYYMM
            ,'LA'                                               AS BGB
@@ -651,9 +603,9 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
         SELECT
             '일반관리비'                                        AS GB
            ,CASE
-                WHEN SL_TPCD IN ('11','21','31','42') THEN '5131030001'  /* 신계약비상각비_대리점 */
-                WHEN SL_TPCD = '41'                   THEN '5131010001'  /* 신계약비상각비_직급   */
-                WHEN SL_TPCD IN ('12','13','22','32') THEN '5131050001'  /* 신계약비상각비_설계사 */
+                WHEN SL_TPCD IN ('11','21','31','42') THEN '5131030001'
+                WHEN SL_TPCD = '41'                   THEN '5131010001'
+                WHEN SL_TPCD IN ('12','13','22','32') THEN '5131050001'
             END                                                AS NTACC_CD
            ,CLS_YYMM                                           AS YYYYMM
            ,'LA'                                               AS BGB
@@ -678,7 +630,6 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
     # tmp_ 중간 테이블 정리
     con.execute("DROP TABLE IF EXISTS tmp_TEMP01_01")
     con.execute("DROP TABLE IF EXISTS tmp_TEMP01_02")
-    log.debug("DROP TABLE tmp_TEMP01_01, tmp_TEMP01_02")
 
     # ══════════════════════════════════════════════
     # 순사업비 요약 (출력 대상 → out_ 접두사)
@@ -687,7 +638,7 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
     # ── out_SA000: 보종별 순사업비 요약 ──────────
     # ⚠ S3GUB, B_CH 컬럼은 KEY.ACCGB 조인 결과에서 옴
     #   key_accgb 테이블이 TABLE_REGISTRY에 등록되어 있어야 함
-    _exec(con, f"out_SA000 (순사업비 요약)", f"""
+    _exec(con, "out_SA000 (순사업비 요약)", f"""
         CREATE OR REPLACE TABLE out_SA000 AS
         SELECT DISTINCT
              INS_IMCD
@@ -747,14 +698,14 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
                 ELSE '0'
              END                                               AS CGB
             ,SUM(S)                                            AS S
-        FROM sa_{YYYYMM}
-        WHERE YYYYMM = '{YYYYMM}'
+        FROM sa_{yyyymm}
+        WHERE YYYYMM = '{yyyymm}'
           AND BZCS_TPCD <> '02'
         GROUP BY INS_IMCD, BGB, S3GUB, B_CH, SL_TPCD, CGB
     """)
 
     # ── out_SA001: 신계약비+수금비 추세분석 ──────
-    _exec(con, f"out_SA001 (신계약비·수금비 추세)", f"""
+    _exec(con, "out_SA001 (신계약비·수금비 추세)", f"""
         CREATE OR REPLACE TABLE out_SA001 AS
         SELECT DISTINCT
              YYYYMM
@@ -762,211 +713,41 @@ def run_business_logic(con: duckdb.DuckDBPyConnection):
             ,SUBSTR(INS_IMCD,1,2)  AS BGB
             ,SL_TPCD
             ,SUM(S)                AS S
-        FROM sa_{YYYYMM}
+        FROM sa_{yyyymm}
         WHERE SUBSTR(NTACC_CD,1,4) IN ('5121','5127','5128','5129')
-          /* 비래수담, 비래수수료, 환속, 신계약비 */
         GROUP BY YYYYMM, NTACC_CD, BGB, SL_TPCD
     """)
 
+    log.info(f"[LOGIC] 완료  소요: {time.time()-t0:.1f}초")
+
 
 # ══════════════════════════════════════════════
-# 5. 단계별 실행 함수
+# 5. VALIDATE — 검증
 # ══════════════════════════════════════════════
 
-def _existing_tables(con) -> set:
-    """DB에 현재 존재하는 테이블명 집합 반환"""
-    rows = con.execute(
+def step_validate(con, yyyymm: str):
+    """건수 검증 + 시산표 검증"""
+    t0 = time.time()
+    log.info("=" * 55)
+    log.info("[VALIDATE] 검증 시작")
+    log.info("=" * 55)
+
+    # ── 결과 테이블 건수 출력 ────
+    log.info("── 결과 테이블 건수 ──")
+    tables = con.execute(
         "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema = 'main'"
+        "WHERE table_schema = 'main' ORDER BY table_name"
     ).fetchall()
-    return {r[0] for r in rows}
 
+    for (tbl,) in tables:
+        if tbl.startswith(PREFIX_VALIDATE):
+            continue
+        cnt = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        log.info(f"  {tbl:25s}: {cnt:>10,}건")
 
-def _load_one(name: str, cfg: dict) -> tuple:
-    """
-    단일 테이블 파일 읽기 (병렬 실행 대상)
-    반환: (name, df) 또는 (name, Exception)
-    DuckDB 저장은 여기서 하지 않음 — 커넥션은 스레드 비안전
-    """
-    try:
-        df = load_table(name, cfg)
-        return name, df
-    except Exception as e:
-        return name, e
+    # ── 시산표 검증 ─────────────────
+    log.info("── 시산표 검증 ──")
 
-
-def _has_yyyymm(con, table: str, yyyymm: str) -> bool:
-    """테이블에 해당 YYYYMM 데이터가 존재하는지 확인"""
-    try:
-        cnt = con.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE YYYYMM = '{yyyymm}'"
-        ).fetchone()[0]
-        return cnt > 0
-    except Exception:
-        # 테이블 없거나 YYYYMM 컬럼 없으면 False
-        return False
-
-
-def _upsert_df(con, name: str, df) -> int:
-    """
-    누적 적재 (YYYYMM 파티션 단위)
-
-    1. 테이블 없으면 CREATE
-    2. 해당 YYYYMM 데이터 DELETE
-    3. INSERT
-
-    반환: INSERT 건수
-    """
-    con.register(f"_df_{name}", df)
-
-    existing = _existing_tables(con)
-    if name not in existing:
-        # 최초 생성
-        con.execute(f"CREATE TABLE {name} AS SELECT * FROM _df_{name} WHERE 1=0")
-        log.debug(f"[{name}] 테이블 최초 생성")
-
-    # YYYYMM 컬럼 존재 여부 확인
-    cols = [r[0] for r in con.execute(f"PRAGMA table_info({name})").fetchall()]
-    if "YYYYMM" in cols:
-        deleted = con.execute(
-            f"DELETE FROM {name} WHERE YYYYMM = '{YYYYMM}'"
-        ).rowcount
-        if deleted:
-            log.debug(f"[{name}] {YYYYMM} 기존 데이터 삭제: {deleted:,}건")
-    else:
-        # YYYYMM 컬럼 없는 테이블은 테이블 전체 교체
-        con.execute(f"DELETE FROM {name}")
-        log.debug(f"[{name}] YYYYMM 컬럼 없음 → 전체 교체")
-
-    con.execute(f"INSERT INTO {name} SELECT * FROM _df_{name}")
-    cnt = con.execute(f"SELECT COUNT(*) FROM {name} WHERE YYYYMM = '{YYYYMM}'"
-                      if "YYYYMM" in cols
-                      else f"SELECT COUNT(*) FROM {name}").fetchone()[0]
-    return cnt
-
-
-def step_load(con, tables: list, force: bool = False, workers: int = 4):
-    """[1단계] DAT 파일 → DuckDB 테이블 누적 적재
-
-    누적 적재 전략 (YYYYMM 파티션):
-      - 테이블 없음      → CREATE + INSERT
-      - 해당 월 없음     → INSERT (기존 월 보존)
-      - 해당 월 있음     → 스킵  (--force 시 DELETE + INSERT)
-
-    병렬 전략:
-      - 파일 읽기 : ThreadPoolExecutor 로 병렬 실행
-      - DB 저장   : 메인 스레드에서 순차 실행 (DuckDB 커넥션 비안전)
-
-    Args:
-        force   : True 면 해당 YYYYMM 데이터 삭제 후 재적재
-        workers : 동시 파일 읽기 스레드 수 (기본 4)
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    t0 = time.time()
-    log.info("=" * 55)
-    log.info(f"[LOAD] 누적 적재 시작  (대상 월: {YYYYMM})")
-    if tables:
-        log.info(f"       대상 테이블: {', '.join(tables)}")
-    log.info(f"       force 재적재: {'ON' if force else 'OFF'}")
-    log.info(f"       병렬 workers: {workers}")
-    log.info("=" * 55)
-
-    target   = {k: v for k, v in TABLE_REGISTRY.items()
-                if not tables or k in tables}
-    existing = _existing_tables(con)
-    loaded, skipped, failed = [], [], []
-
-    # ── 스킵 대상 먼저 분리 ──────────────────────
-    # 해당 YYYYMM 데이터가 이미 있고 --force 없으면 스킵
-    to_load = {}
-    for name, cfg in target.items():
-        if name in existing and _has_yyyymm(con, name, YYYYMM) and not force:
-            cnt = con.execute(
-                f"SELECT COUNT(*) FROM {name} WHERE YYYYMM = '{YYYYMM}'"
-            ).fetchone()[0]
-            total = con.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
-            log.info(f"[{name}] {YYYYMM} 이미 적재됨 — 스킵  "
-                     f"({cnt:,}건 / 누적 {total:,}건)")
-            skipped.append(name)
-        else:
-            to_load[name] = cfg
-
-    if not to_load:
-        log.info(f"[LOAD] 로드할 테이블 없음  소요: {time.time()-t0:.1f}초")
-        return loaded
-
-    # ── 병렬 파일 읽기 ───────────────────────────
-    log.info(f"파일 읽기 시작  ({len(to_load)}개 테이블 / {workers} workers)")
-    results = {}
-
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(_load_one, name, cfg): name
-            for name, cfg in to_load.items()
-        }
-        for future in as_completed(futures):
-            name, result = future.result()
-            results[name] = result
-
-    # ── 순차 DB 저장 ─────────────────────────────
-    log.info("DB 저장 시작  (순차)")
-    for name in to_load:
-        result = results[name]
-        if isinstance(result, FileNotFoundError):
-            log.warning(f"[{name}] 파일 없음 — 건너뜀  ({result})")
-            failed.append(name)
-        elif isinstance(result, Exception):
-            log.error(f"[{name}] 로드 실패: {type(result).__name__}: {result}",
-                      exc_info=False)
-            failed.append(name)
-        else:
-            cnt = _upsert_df(con, name, result)
-            log.info(f"[{name}] {YYYYMM} 적재 완료  {cnt:,}건")
-            loaded.append(name)
-
-    elapsed = time.time() - t0
-    log.info(f"[LOAD] 완료  신규: {loaded}  스킵: {skipped}  실패: {failed}  "
-             f"소요: {elapsed:.1f}초")
-    return loaded
-
-
-def step_logic(con):
-    """[2단계] 배분 로직 실행 (SA01→SA11→SA20→집계)"""
-    t0 = time.time()
-    log.info("=" * 55)
-    log.info("[LOGIC] 배분 로직 실행 시작")
-    log.info("=" * 55)
-
-    existing = {r[0] for r in con.execute(
-        "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema = 'main'"
-    ).fetchall()}
-    log.debug(f"DB 테이블 목록: {sorted(existing)}")
-
-    required = {"fio841", "fio843", "sa01", "sa02"}
-    missing  = required - existing
-    if missing:
-        log.warning(f"필수 테이블 없음: {missing} — load 단계를 먼저 실행하세요")
-        return
-
-    run_business_logic(con)
-
-    elapsed = time.time() - t0
-    log.info(f"[LOGIC] 완료  소요: {elapsed:.1f}초")
-
-
-def run_validate_logic(con):
-    """
-    검증용 임시 테이블은 반드시 val_ 접두사 사용
-    step_validate 완료 시 자동 DROP
-
-    SAS WORK 대응:
-      SAS   : DATA WORK.CH  /  CREATE TABLE CH AS ...
-      Python: val_CH         ← PREFIX_VALIDATE + 원래이름
-    """
-
-    # ── 배분결과 시산표 검증 ──────────────────
     _exec(con, "val_TEMP00 (전표 집계)", """
         CREATE OR REPLACE TABLE val_TEMP00 AS
         SELECT DISTINCT '전표'  AS GB
@@ -981,7 +762,7 @@ def run_validate_logic(con):
         SELECT DISTINCT '결과'  AS GB
               ,NTACC_CD
               ,SUM(S)           AS S
-        FROM sa_{YYYYMM}
+        FROM sa_{yyyymm}
         GROUP BY GB, NTACC_CD
     """)
 
@@ -1011,11 +792,10 @@ def run_validate_logic(con):
     """)
 
     # ── 자동차 TM/CM 비비례 배분 누락 체크 (0건이어야 정상) ──
-    # 자동자 TM/CM보종 = 채널코드 21 → 비비례사업비 배분받은 거 없어야 함 (24.08 반영)
     _exec(con, "val_CA_TMCM_Chk (자동차 TM/CM 비비례 오류)", f"""
         CREATE OR REPLACE TABLE val_CA_TMCM_Chk AS
         SELECT *
-        FROM sa_{YYYYMM}
+        FROM sa_{yyyymm}
         WHERE SUBSTR(BZCS_02_DVCD, 1, 1) = 'E'
           AND NTACC_CD IN (
               SELECT DISTINCT NTACC_CD
@@ -1027,11 +807,10 @@ def run_validate_logic(con):
     """)
 
     # ── 재마감 자동차 금액 확인 ──────────────────
-    # 재작업 전: 200449694 / 재작업 후: 107627489 (기준값과 비교)
     _exec(con, "val_CA_2601_Chk (재마감 자동차 금액)", f"""
         CREATE OR REPLACE TABLE val_CA_2601_Chk AS
         SELECT SUM(S) AS TOTAL_S
-        FROM sa_{YYYYMM}
+        FROM sa_{yyyymm}
         WHERE SUBSTR(BZCS_02_DVCD, 1, 1) = 'E'
           AND BZCS_02_DVCD NOT IN ('E07','E08','E09','E10','E11','E12','E13')
           AND NTACC_CD IN (
@@ -1043,51 +822,38 @@ def run_validate_logic(con):
           AND SL_TPCD = '14'
     """)
     total_s = con.execute("SELECT TOTAL_S FROM val_CA_2601_Chk").fetchone()[0]
-    log.info(f"  val_CA_2601_Chk TOTAL_S = {total_s:,.0f}  (기준: 재작업전 200,449,694 / 재작업후 107,627,489)")
+    log.info(f"  val_CA_2601_Chk TOTAL_S = {total_s:,.0f}  "
+             f"(기준: 재작업전 200,449,694 / 재작업후 107,627,489)")
 
-
-def step_validate(con):
-    """[3단계] 건수 검증 + 시산표 검증"""
-    t0 = time.time()
-    log.info("=" * 55)
-    log.info("[VALIDATE] 검증 시작")
-    log.info("=" * 55)
-
-    # ── 결과 테이블 건수 출력 (val_ 제외) ────
-    log.info("── 결과 테이블 건수 ──")
-    tables = con.execute(
+    # ── val_ 임시 테이블 정리 ───────────
+    val_tables = [r[0] for r in con.execute(
         "SELECT table_name FROM information_schema.tables "
-        "WHERE table_schema = 'main' ORDER BY table_name"
-    ).fetchall()
+        "WHERE table_schema='main'"
+    ).fetchall() if r[0].startswith(PREFIX_VALIDATE)]
+    for t in val_tables:
+        con.execute(f"DROP TABLE IF EXISTS {t}")
+    if val_tables:
+        log.info(f"임시 테이블 정리: {val_tables}")
 
-    total = 0
-    for (tbl,) in tables:
-        if tbl.startswith(PREFIX_VALIDATE):  # val_ 임시 테이블은 건수 출력 제외
-            continue
-        cnt = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-        total += cnt
-        log.info(f"  {tbl:25s}: {cnt:>10,}건")
-
-    # ── 시산표 검증 로직 실행 ─────────────────
-    log.info("── 시산표 검증 ──")
-    run_validate_logic(con)
-
-    # ── val_ 임시 테이블 자동 정리 ───────────
-    _drop_by_prefix(con, PREFIX_VALIDATE)
-
-    elapsed = time.time() - t0
-    log.info(f"[VALIDATE] 완료  소요: {elapsed:.1f}초")
+    log.info(f"[VALIDATE] 완료  소요: {time.time()-t0:.1f}초")
 
 
-def step_export(con, tables: list):
-    """[4단계] Excel 출력"""
+# ══════════════════════════════════════════════
+# 6. EXPORT — Excel 출력
+# ══════════════════════════════════════════════
+
+def step_export(con, yyyymm: str, tables: list = None):
+    """결과 테이블을 Excel로 출력"""
     t0 = time.time()
-    out_file = OUT_DIR / f"output_{YYYYMM}.xlsx"
+    out_dir = ROOT / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"output_{yyyymm}.xlsx"
+
     log.info("=" * 55)
     log.info(f"[EXPORT] Excel 저장 시작  → {out_file}")
     log.info("=" * 55)
 
-    # ── 고정 시트맵 (원천·결과 테이블) ─────────────────────────
+    # ── 고정 시트맵 ─────────────────────────
     sheet_map = {
         "fio841"          : "fio841",
         "fio843"          : "fio843",
@@ -1103,23 +869,20 @@ def step_export(con, tables: list):
         "bs105"           : "BS105_지급준비금",
     }
 
-    # ── out_ 테이블 자동 수집 (시트명 = out_ 뗀 이름) ──────────
+    # ── out_ 테이블 자동 수집 ──────────
     db_tables = [r[0] for r in con.execute(
         "SELECT table_name FROM information_schema.tables "
         "WHERE table_schema='main' ORDER BY table_name"
     ).fetchall()]
     for tbl in db_tables:
         if tbl.startswith(PREFIX_EXPORT):
-            sheet_name = tbl[len(PREFIX_EXPORT):]   # out_ 제거
-            sheet_map[tbl] = sheet_name
-            log.debug(f"out_ 자동 추가: {tbl} → 시트 '{sheet_name}'")
+            sheet_map[tbl] = tbl[len(PREFIX_EXPORT):]
 
-    # 특정 테이블만 지정된 경우 필터
     if tables:
         sheet_map = {k: v for k, v in sheet_map.items() if k in tables}
 
-    # ── 데이터 시트 저장 + 요약 정보 수집 ──────────────────────
-    summary_rows = []   # (테이블명, 시트명, 건수, 소요초)
+    # ── 시트 저장 ──────────────────────
+    summary_rows = []
 
     with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
         for tbl, sheet in sheet_map.items():
@@ -1134,17 +897,13 @@ def step_export(con, tables: list):
             except Exception as e:
                 log.warning(f"  시트 건너뜀: {sheet}  ({e})")
 
-        # ── 요약 시트 (맨 앞) ─────────────────────────────────
-        from openpyxl import load_workbook
+        # ── 요약 시트 ─────────────────────────────────
         from openpyxl.utils import get_column_letter
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from datetime import datetime as _dt
 
         wb = writer.book
+        ws_sum = wb.create_sheet("요약", 0)
 
-        ws_sum = wb.create_sheet("📋 요약", 0)   # 맨 앞 삽입
-
-        # 스타일 정의
         hdr_fill  = PatternFill("solid", fgColor="1F4E79")
         hdr_font  = Font(color="FFFFFF", bold=True, size=11)
         alt_fill  = PatternFill("solid", fgColor="EBF3FB")
@@ -1158,7 +917,8 @@ def step_export(con, tables: list):
         # 타이틀
         ws_sum.merge_cells("A1:E1")
         title_cell = ws_sum["A1"]
-        title_cell.value = f"사업비배분 파이프라인 출력 요약  |  {YYYYMM}  |  생성: {_dt.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        title_cell.value = (f"사업비배분 파이프라인 출력 요약  |  {yyyymm}  |  "
+                            f"생성: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         title_cell.font      = Font(bold=True, size=13, color="1F4E79")
         title_cell.alignment = left
         ws_sum.row_dimensions[1].height = 28
@@ -1180,38 +940,21 @@ def step_export(con, tables: list):
             row = i + 2
             fill = alt_fill if i % 2 == 0 else PatternFill()
 
-            # No
             c_no = ws_sum.cell(row=row, column=1, value=i)
-            c_no.alignment = center
-            c_no.border    = border
-            c_no.fill      = fill
+            c_no.alignment, c_no.border, c_no.fill = center, border, fill
 
-            # 테이블명
             c_tbl = ws_sum.cell(row=row, column=2, value=tbl)
-            c_tbl.alignment = left
-            c_tbl.border    = border
-            c_tbl.fill      = fill
+            c_tbl.alignment, c_tbl.border, c_tbl.fill = left, border, fill
 
-            # 시트명 (하이퍼링크)
             c_sheet = ws_sum.cell(row=row, column=3, value=sheet_name)
-            c_sheet.hyperlink  = f"#{sheet_name}!A1"
-            c_sheet.font       = link_font
-            c_sheet.alignment  = left
-            c_sheet.border     = border
-            c_sheet.fill       = fill
+            c_sheet.hyperlink = f"#{sheet_name}!A1"
+            c_sheet.font, c_sheet.alignment, c_sheet.border, c_sheet.fill = link_font, left, border, fill
 
-            # 건수
             c_cnt = ws_sum.cell(row=row, column=4, value=cnt)
-            c_cnt.number_format = "#,##0"
-            c_cnt.alignment     = right
-            c_cnt.border        = border
-            c_cnt.fill          = fill
+            c_cnt.number_format, c_cnt.alignment, c_cnt.border, c_cnt.fill = "#,##0", right, border, fill
 
-            # 소요
             c_el = ws_sum.cell(row=row, column=5, value=round(el, 1))
-            c_el.alignment = center
-            c_el.border    = border
-            c_el.fill      = fill
+            c_el.alignment, c_el.border, c_el.fill = center, border, fill
 
             ws_sum.row_dimensions[row].height = 18
 
@@ -1220,202 +963,55 @@ def step_export(con, tables: list):
         total_cnt = sum(r[2] for r in summary_rows)
         ws_sum.merge_cells(f"A{sum_row}:C{sum_row}")
         c_total_label = ws_sum.cell(row=sum_row, column=1, value="합계")
-        c_total_label.font      = Font(bold=True)
-        c_total_label.alignment = center
-        c_total_label.border    = border
+        c_total_label.font, c_total_label.alignment, c_total_label.border = Font(bold=True), center, border
         c_total = ws_sum.cell(row=sum_row, column=4, value=total_cnt)
-        c_total.number_format = "#,##0"
-        c_total.font          = Font(bold=True)
-        c_total.alignment     = right
-        c_total.border        = border
+        c_total.number_format, c_total.font, c_total.alignment, c_total.border = "#,##0", Font(bold=True), right, border
         ws_sum.cell(row=sum_row, column=5).border = border
         ws_sum.row_dimensions[sum_row].height = 20
 
         log.info(f"  요약 시트 생성: {len(summary_rows)}개 시트  총 {total_cnt:,}건")
 
-    elapsed = time.time() - t0
-    log.info(f"[EXPORT] 완료  → {out_file}  소요: {elapsed:.1f}초")
+    log.info(f"[EXPORT] 완료  → {out_file}  소요: {time.time()-t0:.1f}초")
 
 
 # ══════════════════════════════════════════════
-# 6. JOB 정의
-# ══════════════════════════════════════════════
-# 각 JOB은 (stage, kwargs) 튜플의 리스트
-# stage  : "load" / "logic" / "validate" / "export"
-# kwargs : 각 step 함수에 전달할 파라미터
-#
-# 실행 순서는 리스트 순서 그대로
-# 여러 JOB 지정 시 순차 실행: --job job1 job2 job3
-#
-# 사용 예:
-#   python sas_to_duckdb.py --job job1
-#   python sas_to_duckdb.py --job job1 job2 --yyyymm 202602
+# 7. CLI
 # ══════════════════════════════════════════════
 
-JOBS = {
-    # ── 기본 전체 실행 ────────────────────────
-    "all": [
-        ("load",     {"tables": []}),
-        ("logic",    {}),
-        ("validate", {}),
-        ("export",   {}),
-    ],
-
-    # ── 원천 로드만 ───────────────────────────
-    "load_raw": [
-        ("load",     {"tables": ["fio841", "fio843", "erp",
-                                  "sa01", "sa02", "bs101", "bs104", "bs105"]}),
-    ],
-
-    # ── 배분 로직 + 검증 + 출력 ──────────────
-    "run": [
-        ("logic",    {}),
-        ("validate", {}),
-        ("export",   {}),
-    ],
-
-    # ── 검증 + 출력만 ─────────────────────────
-    "check": [
-        ("validate", {}),
-        ("export",   {}),
-    ],
-}
-
-
-# ══════════════════════════════════════════════
-# 7. JOB 실행기
-# ══════════════════════════════════════════════
-
-def run_job(con, job_name: str, force: bool = False, workers: int = 4):
-    """단일 JOB 실행"""
-    if job_name not in JOBS:
-        log.error(f"알 수 없는 JOB: {job_name}")
-        log.error(f"사용 가능: {list(JOBS.keys())}")
-        return
-
-    steps = JOBS[job_name]
-    log.info("=" * 55)
-    log.info(f"[JOB] {job_name}  ({len(steps)}단계)  월: {YYYYMM}")
-    log.info("=" * 55)
-    t0 = time.time()
-
-    for i, (stage, kwargs) in enumerate(steps, 1):
-        log.info(f"[JOB {job_name}] {i}/{len(steps)} → {stage}")
-
-        if stage == "load":
-            tables = kwargs.get("tables", [])
-            step_load(con, tables, force=force, workers=workers)
-
-        elif stage == "logic":
-            step_logic(con)
-
-        elif stage == "validate":
-            step_validate(con)
-
-        elif stage == "export":
-            tables = kwargs.get("tables", [])
-            step_export(con, tables)
-
-        else:
-            log.error(f"알 수 없는 stage: {stage}")
-
-    log.info(f"[JOB] {job_name} 완료  소요: {time.time()-t0:.1f}초")
-
-
-# ══════════════════════════════════════════════
-# 8. CLI (argparse)
-# ══════════════════════════════════════════════
-
-def parse_args():
-    import argparse
-
+def main():
     parser = argparse.ArgumentParser(
         description="SAS → DuckDB 사업비배분 파이프라인",
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""
 예시:
-  python sas_to_duckdb.py --job all                      # 전체 실행
-  python sas_to_duckdb.py --job load_raw run             # 여러 JOB 순차 실행
-  python sas_to_duckdb.py --job all --yyyymm 202602      # 월 지정
-  python sas_to_duckdb.py --job load_raw --force         # 강제 재적재
-  python sas_to_duckdb.py --stage load --tables erp      # 단계 직접 지정 (기존 방식)
-  python sas_to_duckdb.py --list                         # 테이블 목록 출력
-  python sas_to_duckdb.py --list-jobs                    # JOB 목록 출력
+  python "sas_to_duckdb 12.py" --ym 202601 --stage load logic validate export
+  python "sas_to_duckdb 12.py" --ym 202601 --stage load --tables erp sa01
+  python "sas_to_duckdb 12.py" --ym 202601 --stage logic validate export
+  python "sas_to_duckdb 12.py" --list
         """
     )
 
-    parser.add_argument(
-        "--ym",
-        type=str,
-        default=None,
-        metavar="YYYYMM",
-        help="처리할 년월 (예: 202602) — 생략 시 스크립트 상단 기본값 사용"
-    )
-    parser.add_argument(
-        "--job", "-j",
-        nargs="+",
-        metavar="JOB",
-        default=None,
-        help="실행할 JOB명 (여러 개 지정 시 순차 실행)"
-    )
-    parser.add_argument(
-        "--stage", "-s",
-        choices=["load", "logic", "validate", "export"],
-        default=None,
-        help="단계 직접 지정 (기존 방식 — --job 없을 때 사용)"
-    )
-    parser.add_argument(
-        "--tables", "-t",
-        nargs="+",
-        metavar="TABLE",
-        default=None,
-        help="처리할 테이블명 (--stage load 와 함께 사용)"
-    )
-    parser.add_argument(
-        "--force", "-f",
-        action="store_true",
-        help="해당 YYYYMM 데이터 삭제 후 재적재"
-    )
-    parser.add_argument(
-        "--workers", "-w",
-        type=int,
-        default=4,
-        help="병렬 파일 읽기 스레드 수 (기본: 4)"
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="DEBUG 로그를 콘솔에도 출력"
-    )
-    parser.add_argument(
-        "--list", "-l",
-        action="store_true",
-        help="등록된 테이블 목록 출력 후 종료"
-    )
-    parser.add_argument(
-        "--list-jobs",
-        action="store_true",
-        help="등록된 JOB 목록 출력 후 종료"
-    )
+    parser.add_argument("--ym", type=str, default="202601",
+                        help="처리할 년월 (기본: 202601)")
+    parser.add_argument("--stage", "-s", nargs="+",
+                        choices=["load", "logic", "validate", "export"],
+                        help="실행할 단계 (순서대로 나열)")
+    parser.add_argument("--tables", "-t", nargs="+", default=None,
+                        help="load/export 시 대상 테이블 지정")
+    parser.add_argument("--verbose", "-v", action="store_true",
+                        help="DEBUG 로그를 콘솔에도 출력")
+    parser.add_argument("--list", "-l", action="store_true",
+                        help="등록된 테이블 목록 출력 후 종료")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    yyyymm = args.ym
 
-
-def main():
-    args = parse_args()
-
-    # --yyyymm: 전역변수 재설정
-    if args.ym:
-        init(args.ym)
-
-    # --verbose: 콘솔 핸들러를 DEBUG 로 낮춤
     if args.verbose:
         for handler in log.handlers:
-            if isinstance(handler, logging.StreamHandler) and                not isinstance(handler, logging.FileHandler):
+            if isinstance(handler, logging.StreamHandler) and \
+               not isinstance(handler, logging.FileHandler):
                 handler.setLevel(logging.DEBUG)
-        log.debug("DEBUG 로그 활성화")
 
-    # --list: 테이블 목록 출력
     if args.list:
         log.info(f"등록된 테이블 ({len(TABLE_REGISTRY)}개):")
         for name, cfg in TABLE_REGISTRY.items():
@@ -1423,59 +1019,39 @@ def main():
             log.info(f"             파일: {cfg['file']}")
         return
 
-    # --list-jobs: JOB 목록 출력
-    if args.list_jobs:
-        log.info(f"등록된 JOB ({len(JOBS)}개):")
-        for jname, steps in JOBS.items():
-            log.info(f"  {jname}")
-            for stage, kwargs in steps:
-                t = kwargs.get("tables", [])
-                tstr = f"  tables={t}" if t else ""
-                log.info(f"    → {stage}{tstr}")
+    if not args.stage:
+        log.info("실행할 단계를 지정하세요.  예: --stage load logic validate export")
         return
 
-    con = duckdb.connect(str(DB_PATH))
+    # 테이블명 유효성 검사
+    if args.tables:
+        invalid = [t for t in args.tables if t not in TABLE_REGISTRY]
+        if invalid:
+            log.error(f"알 수 없는 테이블: {invalid}")
+            log.error(f"사용 가능: {list(TABLE_REGISTRY.keys())}")
+            return
+
+    # DB 연결
+    db_path = ROOT / "db" / f"{yyyymm}.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    log.info(f"대상 월: {yyyymm}")
+    log.info(f"DB    : {db_path}")
+
+    con = duckdb.connect(str(db_path))
     try:
         t_total = time.time()
 
-        if args.job:
-            # ── JOB 모드 ──────────────────────────
-            invalid = [j for j in args.job if j not in JOBS]
-            if invalid:
-                log.error(f"알 수 없는 JOB: {invalid}")
-                log.error(f"사용 가능: {list(JOBS.keys())}")
-                return
-            for job_name in args.job:
-                run_job(con, job_name,
-                        force=args.force, workers=args.workers)
-            log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
+        for stage in args.stage:
+            if stage == "load":
+                step_load(con, yyyymm, tables=args.tables)
+            elif stage == "logic":
+                step_logic(con, yyyymm)
+            elif stage == "validate":
+                step_validate(con, yyyymm)
+            elif stage == "export":
+                step_export(con, yyyymm, tables=args.tables)
 
-        elif args.stage:
-            # ── 단계 직접 지정 모드 (기존 방식) ──
-            if args.stage == "load":
-                # 테이블명 유효성 검사
-                if args.tables:
-                    invalid = [t for t in args.tables if t not in TABLE_REGISTRY]
-                    if invalid:
-                        log.error(f"알 수 없는 테이블: {invalid}")
-                        log.error(f"사용 가능: {list(TABLE_REGISTRY.keys())}")
-                        return
-                step_load(con, args.tables or [],
-                          force=args.force, workers=args.workers)
-            elif args.stage == "logic":
-                step_logic(con)
-            elif args.stage == "validate":
-                step_validate(con)
-            elif args.stage == "export":
-                step_export(con, args.tables or [])
-
-        else:
-            # ── 인자 없음 → 안내 ──────────────────
-            log.info("실행할 JOB 또는 단계를 지정하세요.")
-            log.info("  --job all            전체 실행")
-            log.info("  --list-jobs          JOB 목록 확인")
-            log.info("  --stage load         단계 직접 지정")
-
+        log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
     finally:
         con.close()
 
