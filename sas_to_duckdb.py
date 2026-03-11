@@ -5,11 +5,11 @@ SAS → DuckDB 전환 파이프라인
 동일 DB에 월별 데이터가 누적됨 (YYYYMM 기준 교체).
 
 실행 예시:
-  python "sas_to_duckdb 12.py" --ym 202601                     # 전체 (job1→job2→job3)
-  python "sas_to_duckdb 12.py" --ym 202601 --job 1              # job1만
-  python "sas_to_duckdb 12.py" --ym 202601 --job 2 3            # job2, job3만
-  python "sas_to_duckdb 12.py" --ym 202601 --job 1 --skip-load  # job1 로직만 (로드 생략)
-  python "sas_to_duckdb 12.py" --list                            # 테이블 목록
+  python sas_to_duckdb.py --ym 202601                     # 전체 (job1→job2→job3)
+  python sas_to_duckdb.py --ym 202601 --job 1              # job1만
+  python sas_to_duckdb.py --ym 202601 --job 2 3            # job2, job3만
+  python sas_to_duckdb.py --ym 202601 --job 1 --skip-load  # job1 로직만 (로드 생략)
+  python sas_to_duckdb.py --list                            # 테이블 목록
 """
 
 import re
@@ -883,11 +883,11 @@ def main():
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="""
 예시:
-  python "sas_to_duckdb 12.py" --ym 202601                      # 전체 (job1→2→3)
-  python "sas_to_duckdb 12.py" --ym 202601 --job 1              # job1만
-  python "sas_to_duckdb 12.py" --ym 202601 --job 2 3            # job2, job3
-  python "sas_to_duckdb 12.py" --ym 202601 --job 1 --skip-load  # 로드 스킵
-  python "sas_to_duckdb 12.py" --list                            # 테이블 목록
+  python sas_to_duckdb.py --ym 202601                      # 전체 (job1→2→3)
+  python sas_to_duckdb.py --ym 202601 --job 1              # job1만
+  python sas_to_duckdb.py --ym 202601 --job 2 3            # job2, job3
+  python sas_to_duckdb.py --ym 202601 --job 1 --skip-load  # 로드 스킵
+  python sas_to_duckdb.py --list                            # 테이블 목록
         """
     )
     parser.add_argument("--ym", type=str, default="202601",
