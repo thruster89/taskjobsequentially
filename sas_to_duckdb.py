@@ -187,6 +187,7 @@ def _upsert(con, name, df, yyyymm, month_col):
     if month_col:
         con.execute(f"DELETE FROM {name} WHERE {month_col} = '{yyyymm}'")
     else:
+        log.warning(f"  [{name}] month_col=null → 전체 교체 (기존 데이터 삭제)")
         con.execute(f"DELETE FROM {name}")
 
     con.execute(f"INSERT INTO {name} SELECT * FROM {tmp}")
@@ -237,6 +238,10 @@ def do_load(con, yyyymm, tables: dict):
 
     for name, cfg in tables.items():
         try:
+            if "month_col" not in cfg:
+                raise KeyError(
+                    f"[{name}] TABLES 정의에 'month_col' 필수 "
+                    f"(누적: 컬럼명 / 전체교체: null)")
             path = _resolve_path(base_path, cfg["file"], yyyymm)
             log.info(f"  [{name}] {cfg.get('desc', '')}  ← {path.name}")
             ts = time.time()
