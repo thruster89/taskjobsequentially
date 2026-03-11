@@ -84,7 +84,6 @@ ROOT = Path(__file__).parent
 ENCODINGS = ["cp949", "utf-8"]
 FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
 
-PREFIX_VAL = "val_"
 PREFIX_OUT = "out_"
 
 
@@ -116,6 +115,38 @@ def table_exists(con, name):
         f"WHERE table_schema='main' AND table_name='{name}'"
     ).fetchone()[0]
     return cnt > 0
+
+
+def check(con, label, query, expect="zero"):
+    """
+    검증용 헬퍼. SELECT 결과를 로깅만 하고 테이블은 만들지 않음.
+
+    expect:
+      "zero"    — 0건이어야 정상 (이상 데이터 탐지)
+      "nonzero" — 1건 이상이어야 정상 (데이터 존재 확인)
+      int       — 정확히 N건이어야 정상
+    """
+    row = con.execute(query).fetchone()
+    cnt = row[0] if row else 0
+    if expect == "zero":
+        ok = cnt == 0
+    elif expect == "nonzero":
+        ok = cnt > 0
+    else:
+        ok = cnt == expect
+    mark = "OK" if ok else "NG"
+    log.info(f"  [{mark}] {label + ' ' * max(0, 45 - _dw(label))}  {cnt:>12,}건")
+    return ok
+
+
+def row_count(con, table):
+    """테이블 건수 로깅"""
+    if not table_exists(con, table):
+        log.warning(f"  [--] {table:45s}  테이블 없음")
+        return 0
+    cnt = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    log.info(f"  [OK] {table + ' ' * max(0, 45 - _dw(table))}  {cnt:>12,}건")
+    return cnt
 
 
 def _resolve_path(base, file_template, yyyymm):
@@ -160,16 +191,6 @@ def _upsert(con, name, df, yyyymm, month_col):
 
     con.execute(f"INSERT INTO {name} SELECT * FROM {tmp}")
     return len(df)
-
-
-def _drop_prefix(con, prefix):
-    """prefix로 시작하는 테이블 전부 DROP"""
-    tbls = [r[0] for r in con.execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema='main'"
-    ).fetchall() if r[0].startswith(prefix)]
-    for t in tbls:
-        con.execute(f"DROP TABLE IF EXISTS {t}")
-    return tbls
 
 
 # ══════════════════════════════════════════════
@@ -348,11 +369,6 @@ def run_job(con, job_mod, yyyymm, skip_load=False):
     # 3. VALIDATE
     log.info(f"[{name}] VALIDATE")
     job_mod.validate(con, yyyymm)
-
-    # val_ 임시 테이블 정리
-    dropped = _drop_prefix(con, PREFIX_VAL)
-    if dropped:
-        log.info(f"[{name}] 임시 정리: {dropped}")
 
     # 4. EXPORT
     sheets = dict(getattr(job_mod, "EXPORT_SHEETS", {}))

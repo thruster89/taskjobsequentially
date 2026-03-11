@@ -4,7 +4,7 @@ JOB 1: 원천 데이터 집계 (보험료)
 1차 파일 수신 후 실행:
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py
 """
-from sas_to_duckdb import sql, table_exists
+from sas_to_duckdb import sql, table_exists, check, row_count
 
 NAME = "job1"
 DESC = "원천 데이터 집계 (보험료)"
@@ -124,7 +124,10 @@ def logic(con, yyyymm):
 # 검증
 # ══════════════════════════════════════════════
 def validate(con, yyyymm):
-    for tbl in ["fio841", "fio843", "BASE_DATA_CH", "BASE_DATA_CH_843", "BASE_DATA_CH2", "CH"]:
-        if table_exists(con, tbl):
-            cnt = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-            print(f"  {tbl:25s}: {cnt:>10,}건")
+    for tbl in ["fio841", "fio843", "BASE_DATA_CH", "BASE_DATA_CH_843", "BASE_DATA_CH2"]:
+        row_count(con, tbl)
+
+    # 취급기관 이상 (0건이어야 정상)
+    check(con, "취급기관 이상 (2S+비E)", """
+        SELECT COUNT(*) FROM CH
+    """, expect="zero")

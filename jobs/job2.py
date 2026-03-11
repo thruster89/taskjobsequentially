@@ -4,7 +4,7 @@ JOB 2: 배분 결과 (SA 변환·집계)
 2차 파일 수신 후 실행 (job1 완료 후):
   python sas_to_duckdb.py --ym 202601 --job jobs/job2.py
 """
-from sas_to_duckdb import sql, table_exists
+from sas_to_duckdb import sql, table_exists, check, row_count
 
 NAME = "job2"
 DESC = "배분 결과 (SA 변환·집계)"
@@ -201,23 +201,17 @@ def logic(con, yyyymm):
 # ══════════════════════════════════════════════
 def validate(con, yyyymm):
     for tbl in ["sa11", "sa12", "sa20", f"sa_{yyyymm}"]:
-        if table_exists(con, tbl):
-            cnt = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-            print(f"  {tbl:25s}: {cnt:>10,}건")
+        row_count(con, tbl)
 
-    # 전표 vs 배분결과 비교
+    # 전표 vs 배분결과 대사 (차이 0이어야 정상)
     if table_exists(con, "erp") and table_exists(con, f"sa_{yyyymm}"):
-        sql(con, "val_전표집계", """
-            CREATE OR REPLACE TABLE val_TEMP00 AS
-            SELECT DISTINCT '전표' AS GB, NTACC_CD, SUM(WONCR_POAMT) AS S
-            FROM erp GROUP BY GB, NTACC_CD
-        """)
-        sql(con, "val_배분결과집계", f"""
-            CREATE OR REPLACE TABLE val_TEMP01 AS
-            SELECT DISTINCT '결과' AS GB, NTACC_CD, SUM(S) AS S
-            FROM sa_{yyyymm} GROUP BY GB, NTACC_CD
-        """)
-        sql(con, "val_시산표비교", """
-            CREATE OR REPLACE TABLE val_TEMP02 AS
-            SELECT * FROM val_TEMP00 UNION ALL SELECT * FROM val_TEMP01
-        """)
+        check(con, "전표 vs 배분결과 계정별 차이", f"""
+            SELECT COUNT(*) FROM (
+                SELECT NTACC_CD, SUM(S) AS diff FROM (
+                    SELECT NTACC_CD, SUM(WONCR_POAMT) AS S FROM erp GROUP BY NTACC_CD
+                    UNION ALL
+                    SELECT NTACC_CD, -SUM(S) AS S FROM sa_{yyyymm} GROUP BY NTACC_CD
+                ) GROUP BY NTACC_CD
+                HAVING ABS(SUM(S)) > 1
+            )
+        """, expect="zero")

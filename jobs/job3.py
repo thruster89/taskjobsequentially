@@ -4,7 +4,7 @@ JOB 3: 마감 검증 (ERP·BS)
 3차 파일 수신 후 실행 (job1, job2 완료 후):
   python sas_to_duckdb.py --ym 202601 --job jobs/job3.py
 """
-from sas_to_duckdb import sql, table_exists
+from sas_to_duckdb import sql, table_exists, check, row_count
 
 NAME = "job3"
 DESC = "마감 검증 (ERP·BS)"
@@ -108,31 +108,26 @@ def logic(con, yyyymm):
 # ══════════════════════════════════════════════
 def validate(con, yyyymm):
     for tbl in ["erp", "bs101", "bs104", "bs105"]:
-        if table_exists(con, tbl):
-            cnt = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-            print(f"  {tbl:25s}: {cnt:>10,}건")
+        row_count(con, tbl)
 
     # bs104 IBNR 담보코드 누락 (0건이어야 정상)
     if table_exists(con, "bs104"):
-        sql(con, "val_PY_IBAMT_CH (bs104 IBNR 누락)", """
-            CREATE OR REPLACE TABLE val_PY_IBAMT_CH AS
-            SELECT * FROM bs104
+        check(con, "bs104 IBNR 담보코드 누락", """
+            SELECT COUNT(*) FROM bs104
             WHERE IKD_GRPCD = 'LA' AND CVRCD IS NULL
-        """)
+        """, expect="zero")
 
     # bs105 IBNR 담보코드 누락 (0건이어야 정상)
     if table_exists(con, "bs105"):
-        sql(con, "val_PY_RFAMT_CH (bs105 IBNR 누락)", """
-            CREATE OR REPLACE TABLE val_PY_RFAMT_CH AS
-            SELECT * FROM bs105
+        check(con, "bs105 IBNR 담보코드 누락", """
+            SELECT COUNT(*) FROM bs105
             WHERE IKD_GRPCD = 'LA' AND CLM_CVRCD IS NULL
-        """)
+        """, expect="zero")
 
-    # 자동차 TM/CM 비비례 배분 누락 (0건이어야 정상)
+    # 자동차 TM/CM 비비례 배분 (0건이어야 정상)
     if table_exists(con, f"sa_{yyyymm}") and table_exists(con, "erp"):
-        sql(con, "val_CA_TMCM_Chk (자동차 TM/CM 오류)", f"""
-            CREATE OR REPLACE TABLE val_CA_TMCM_Chk AS
-            SELECT * FROM sa_{yyyymm}
+        check(con, "자동차 TM/CM 비비례 배분 누락", f"""
+            SELECT COUNT(*) FROM sa_{yyyymm}
             WHERE SUBSTR(BZCS_02_DVCD, 1, 1) = 'E'
               AND NTACC_CD IN (
                   SELECT DISTINCT NTACC_CD FROM erp
@@ -140,11 +135,11 @@ def validate(con, yyyymm):
               )
               AND SUBSTR(INS_IMCD, 1, 2) = 'CA'
               AND SL_TPCD = '21'
-        """)
+        """, expect="zero")
 
-        sql(con, "val_CA_2601_Chk (재마감 자동차 금액)", f"""
-            CREATE OR REPLACE TABLE val_CA_2601_Chk AS
-            SELECT SUM(S) AS TOTAL_S FROM sa_{yyyymm}
+        # 재마감 자동차 금액 확인 (참고값 로깅)
+        row = con.execute(f"""
+            SELECT COALESCE(SUM(S), 0) FROM sa_{yyyymm}
             WHERE SUBSTR(BZCS_02_DVCD, 1, 1) = 'E'
               AND BZCS_02_DVCD NOT IN ('E07','E08','E09','E10','E11','E12','E13')
               AND NTACC_CD IN (
@@ -153,8 +148,6 @@ def validate(con, yyyymm):
               )
               AND SUBSTR(INS_IMCD, 1, 2) = 'CA'
               AND SL_TPCD = '14'
-        """)
-        row = con.execute("SELECT TOTAL_S FROM val_CA_2601_Chk").fetchone()
-        if row and row[0]:
-            print(f"  val_CA_2601_Chk TOTAL_S = {row[0]:,.0f}  "
-                  f"(기준: 재작업전 200,449,694 / 재작업후 107,627,489)")
+        """).fetchone()
+        from sas_to_duckdb import log
+        log.info(f"  [참고] 재마감 자동차 금액: {row[0]:,.0f}")
