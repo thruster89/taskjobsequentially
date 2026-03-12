@@ -167,14 +167,10 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None):
     """
     numeric_set = set(numeric or [])
 
-    # encodings 확장 로드 (cp949/euc-kr 지원)
-    con.execute("INSTALL encodings; LOAD encodings;")
-
     # 파일을 줄 단위 단일 컬럼으로 읽기
-    # sep='\x01' (SOH): 실제 데이터에 없는 구분자 → 줄 전체가 column0에 들어감
-    # encoding: DuckDB(ICU)에서 Python cp949(=Windows UHC)에 해당하는 이름은 windows-949
-    #           ICU의 cp949는 IBM-949(다른 인코딩)이므로 사용 금지
-    for enc in ["windows-949", "ms949", "euc-kr"]:
+    # delim='\x01' (SOH): 데이터에 없는 구분자 → 줄 전체가 column0
+    # encoding: utf-8 먼저 시도, 실패 시 euc-kr 계열 순서로 폴백
+    for enc in ["utf-8", "euc-kr", "windows-949", "ms949"]:
         try:
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _fwf_raw AS
@@ -189,7 +185,7 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None):
         except Exception:
             continue
     else:
-        raise RuntimeError(f"DuckDB encodings로 {path} 읽기 실패")
+        raise RuntimeError(f"DuckDB read_csv 인코딩 실패: {path}")
 
     # SUBSTR로 컬럼 추출 (SQL 1-based → start+1)
     exprs = []
