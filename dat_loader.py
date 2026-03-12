@@ -154,6 +154,60 @@ def read_fwf_dat(
     return df
 
 
+def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None):
+    """
+    DuckDB 네이티브 FWF 읽기 — pandas 우회, C++ 엔진으로 직접 처리
+
+    con       : DuckDB 커넥션
+    path      : 파일 경로 (.DAT / .gz — .zip은 미지원, 폴백 필요)
+    col_defs  : [(시작, 끝), "컬럼명"] 리스트
+    numeric   : 숫자형 캐스팅 컬럼명 리스트
+
+    Returns: 건수 (int)
+    """
+    numeric_set = set(numeric or [])
+
+    # encodings 확장 로드 (cp949/euc-kr 지원)
+    con.execute("INSTALL encodings; LOAD encodings;")
+
+    # 파일을 줄 단위 단일 컬럼으로 읽기
+    # sep='\x01' (SOH): 실제 데이터에 없는 구분자 → 줄 전체가 column0에 들어감
+    # encoding: cp949 시도, 실패 시 euc-kr 시도
+    for enc in ["cp949", "euc-kr", "euc_kr"]:
+        try:
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE _fwf_raw AS
+                SELECT column0 AS line
+                FROM read_csv('{path}',
+                    delim      = '\x01',
+                    header     = false,
+                    encoding   = '{enc}',
+                    columns    = {{'column0': 'VARCHAR'}})
+            """)
+            break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError(f"DuckDB encodings로 {path} 읽기 실패")
+
+    # SUBSTR로 컬럼 추출 (SQL 1-based → start+1)
+    exprs = []
+    for (start, end), name in col_defs:
+        width = end - start
+        base = f"TRIM(SUBSTR(line, {start + 1}, {width}))"
+        if name in numeric_set:
+            base = f"TRY_CAST({base} AS DOUBLE)"
+        exprs.append(f"{base} AS {name}")
+
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _fwf_parsed AS
+        SELECT {', '.join(exprs)} FROM _fwf_raw
+    """)
+    cnt = con.execute("SELECT COUNT(*) FROM _fwf_parsed").fetchone()[0]
+    con.execute("DROP TABLE IF EXISTS _fwf_raw")
+    return cnt
+
+
 # ══════════════════════════════════════════════
 # 유형B : 파이프 구분자 읽기
 # ══════════════════════════════════════════════
