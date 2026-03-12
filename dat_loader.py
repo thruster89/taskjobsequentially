@@ -265,18 +265,18 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     """
     numeric_set = set(numeric or [])
 
-    # columns 지정 없이 자동 감지 (trailing delimiter 유무에 관계없이 동작)
+    # FWF와 동일: 줄 단위 단일 컬럼으로 읽고 string_split으로 분리
+    # → trailing delimiter, 컬럼 수 불일치 문제 없음
     for enc in ["utf-8", "euc-kr", "windows-949", "ms949"]:
         try:
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _pipe_raw AS
-                SELECT * FROM read_csv('{path}',
-                    delim        = '{delimiter}',
-                    header       = false,
-                    encoding     = '{enc}',
-                    null_padding = true,
-                    quote        = '',
-                    all_varchar  = true)
+                SELECT column0 AS line
+                FROM read_csv('{path}',
+                    delim      = '\x01',
+                    header     = false,
+                    encoding   = '{enc}',
+                    columns    = {{'column0': 'VARCHAR'}})
             """)
             break
         except Exception:
@@ -284,10 +284,10 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     else:
         raise RuntimeError(f"DuckDB read_csv 인코딩 실패: {path}")
 
-    # 자동 생성된 column0, column1, ... 에서 필요한 컬럼만 리네임 + 캐스팅
+    # string_split으로 컬럼 추출 (1-based index)
     exprs = []
     for i, name in enumerate(col_names):
-        base = f"TRIM(column{i})"
+        base = f"TRIM(string_split(line, '{delimiter}')[{i + 1}])"
         if name in numeric_set:
             base = f"TRY_CAST({base} AS DOUBLE)"
         exprs.append(f"{base} AS {name}")
