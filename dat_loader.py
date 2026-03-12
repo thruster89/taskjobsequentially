@@ -265,18 +265,22 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     """
     numeric_set = set(numeric or [])
 
-    # 모든 컬럼을 VARCHAR로 읽기
-    columns_def = ", ".join(f"column{i:02d} VARCHAR" for i in range(len(col_names)))
+    # 모든 컬럼을 VARCHAR로 읽기 (+더미: 끝에 구분자가 하나 더 있는 파일 대응)
+    cols = [f"'column{i:02d}': 'VARCHAR'" for i in range(len(col_names))]
+    cols.append(f"'_dummy': 'VARCHAR'")
+    columns_def = ", ".join(cols)
 
     for enc in ["utf-8", "euc-kr", "windows-949", "ms949"]:
         try:
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _pipe_raw AS
                 SELECT * FROM read_csv('{path}',
-                    delim      = '{delimiter}',
-                    header     = false,
-                    encoding   = '{enc}',
-                    columns    = {{{columns_def}}})
+                    delim        = '{delimiter}',
+                    header       = false,
+                    encoding     = '{enc}',
+                    null_padding = true,
+                    quote        = '',
+                    columns      = {{{columns_def}}})
             """)
             break
         except Exception:
