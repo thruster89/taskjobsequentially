@@ -250,6 +250,57 @@ def read_pipe_dat(
     return df
 
 
+def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
+                     delimiter: str = "|"):
+    """
+    DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
+
+    con       : DuckDB 커넥션
+    path      : 파일 경로 (.DAT / .gz)
+    col_names : 컬럼명 순서 리스트
+    numeric   : 숫자형 캐스팅 컬럼명 리스트
+    delimiter : 구분자 (기본값: "|")
+
+    Returns: 건수 (int)
+    """
+    numeric_set = set(numeric or [])
+
+    # 모든 컬럼을 VARCHAR로 읽기
+    columns_def = ", ".join(f"column{i:02d} VARCHAR" for i in range(len(col_names)))
+
+    for enc in ["utf-8", "euc-kr", "windows-949", "ms949"]:
+        try:
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE _pipe_raw AS
+                SELECT * FROM read_csv('{path}',
+                    delim      = '{delimiter}',
+                    header     = false,
+                    encoding   = '{enc}',
+                    columns    = {{{columns_def}}})
+            """)
+            break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError(f"DuckDB read_csv 인코딩 실패: {path}")
+
+    # 컬럼 리네임 + numeric 캐스팅
+    exprs = []
+    for i, name in enumerate(col_names):
+        base = f"TRIM(column{i:02d})"
+        if name in numeric_set:
+            base = f"TRY_CAST({base} AS DOUBLE)"
+        exprs.append(f"{base} AS {name}")
+
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _pipe_parsed AS
+        SELECT {', '.join(exprs)} FROM _pipe_raw
+    """)
+    cnt = con.execute("SELECT COUNT(*) FROM _pipe_parsed").fetchone()[0]
+    con.execute("DROP TABLE IF EXISTS _pipe_raw")
+    return cnt
+
+
 # ══════════════════════════════════════════════
 # 유형C : sas7bdat 읽기
 # ══════════════════════════════════════════════
