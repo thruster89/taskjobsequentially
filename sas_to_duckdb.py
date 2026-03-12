@@ -62,17 +62,13 @@ def setup_logger() -> logging.Logger:
 log = setup_logger()
 
 # ── 의존성 ───────────────────────────────────
-log.info(f"Python {sys.version.split()[0]}")
-
 try:
     import duckdb
-    log.info(f"duckdb {duckdb.__version__}")
 except ImportError:
     log.critical("pip install duckdb"); sys.exit(1)
 
 try:
     import pandas as pd
-    log.info(f"pandas {pd.__version__}")
 except ImportError:
     log.critical("pip install pandas"); sys.exit(1)
 
@@ -449,6 +445,10 @@ def main():
                         help="DEBUG 로그 콘솔 출력")
 
     args = parser.parse_args()
+
+    log.info(f"Python {sys.version.split()[0]}")
+    log.info(f"duckdb {duckdb.__version__}")
+    log.info(f"pandas {pd.__version__}")
 
     if args.verbose:
         for h in log.handlers:
