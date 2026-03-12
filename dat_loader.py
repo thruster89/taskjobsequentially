@@ -168,7 +168,11 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None):
     numeric_set = set(numeric or [])
 
     # encodings 확장 로드 (cp949/euc-kr 지원)
-    con.execute("INSTALL encodings; LOAD encodings;")
+    try:
+        con.execute("LOAD encodings")
+    except Exception:
+        con.execute("INSTALL encodings")
+        con.execute("LOAD encodings")
 
     # 파일을 줄 단위 단일 컬럼으로 읽기
     # sep='\x01' (SOH): 실제 데이터에 없는 구분자 → 줄 전체가 column0에 들어감
