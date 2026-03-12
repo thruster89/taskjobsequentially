@@ -375,7 +375,8 @@ def _write_summary_sheet(writer, yyyymm, summary):
     c_t.number_format, c_t.font, c_t.alignment, c_t.border = "#,##0", Font(bold=True), right, bdr
 
 
-def run_job(con, job_mod, yyyymm, skip_load=False, stages=None):
+def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
+            only_tables=None):
     """단일 JOB 실행: load → logic → validate → export"""
     name = job_mod.NAME
     desc = getattr(job_mod, "DESC", "")
@@ -386,6 +387,8 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None):
     log.info(f"[{name}] {desc}  (월: {yyyymm})")
     if not run_all:
         log.info(f"[{name}] 선택 단계: {stages}")
+    if only_tables:
+        log.info(f"[{name}] 선택 테이블: {only_tables}")
     log.info("=" * 60)
     t0 = time.time()
 
@@ -393,8 +396,16 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None):
     if run_all and skip_load:
         log.info(f"[{name}] LOAD 스킵")
     elif run_all or "load" in stages:
-        log.info(f"[{name}] LOAD")
-        loaded, failed = do_load(con, yyyymm, job_mod.TABLES)
+        tables = job_mod.TABLES
+        if only_tables:
+            unknown = set(only_tables) - set(tables)
+            if unknown:
+                log.warning(f"[{name}] 존재하지 않는 테이블 무시: {unknown}")
+            tables = {k: v for k, v in tables.items() if k in only_tables}
+            if not tables:
+                log.warning(f"[{name}] 로드할 테이블이 없습니다")
+        log.info(f"[{name}] LOAD ({len(tables)}개 테이블)")
+        loaded, failed = do_load(con, yyyymm, tables)
         if failed:
             log.warning(f"[{name}] 로드 실패: {failed}")
 
@@ -433,6 +444,7 @@ def main():
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s logic validate
+  python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -t fio841 fio842
         """
     )
     parser.add_argument("--ym", type=str, default="202601",
@@ -444,6 +456,8 @@ def main():
     parser.add_argument("--stage", "-s", nargs="+",
                         choices=["load", "logic", "validate", "export"],
                         help="실행할 단계만 지정 (예: --stage load)")
+    parser.add_argument("--tables", "-t", nargs="+",
+                        help="로드할 테이블명만 지정 (예: --tables fio841 fio842)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="DEBUG 로그 콘솔 출력")
 
@@ -479,7 +493,7 @@ def main():
         t_total = time.time()
         for mod in job_mods:
             run_job(con, mod, yyyymm, skip_load=args.skip_load,
-                    stages=args.stage)
+                    stages=args.stage, only_tables=args.tables)
         log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
     finally:
         con.close()
