@@ -98,10 +98,10 @@ def _dw(s):
     return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in s)
 
 
-def sql(con, label, query):
+def sql(con, label, query, params=None):
     """SQL 실행 + CREATE TABLE이면 건수 로깅"""
     t = time.time()
-    con.execute(query)
+    con.execute(query, params or [])
     m = re.search(r"CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
                   query, re.IGNORECASE)
     if m:
