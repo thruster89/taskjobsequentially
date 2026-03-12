@@ -180,6 +180,19 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
             log.info(f"       {keys:30s}  A: {val_a:>14,.0f}  B: {val_b:>14,.0f}  diff: {diff:>14,.0f}")
         if total > 20:
             log.info(f"       ... 외 {total - 20:,}건")
+
+        # CSV 저장
+        import csv
+        out_dir = ROOT / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = label.replace(" ", "_").replace("/", "_")[:50]
+        csv_path = out_dir / f"diff_{safe_name}.csv"
+        cols = group_cols + ["val_a", "val_b", "diff"]
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(cols)
+            w.writerows(rows)
+        log.info(f"       → {csv_path}")
     return ok
 
 
