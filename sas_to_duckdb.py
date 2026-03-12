@@ -7,6 +7,8 @@ JOB 파일을 지정하여 실행합니다. 각 JOB 파일은 독립적으로 �
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py
   python sas_to_duckdb.py --ym 202601 --job jobs/job2.py --skip-load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
+  python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
+  python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage logic validate
 """
 
 import re
@@ -24,6 +26,8 @@ from datetime import datetime
 # ══════════════════════════════════════════════
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger("pipeline")
+    if logger.handlers:
+        return logger
     logger.setLevel(logging.DEBUG)
 
     class AlignedFormatter(logging.Formatter):
@@ -348,38 +352,45 @@ def _write_summary_sheet(writer, yyyymm, summary):
     c_t.number_format, c_t.font, c_t.alignment, c_t.border = "#,##0", Font(bold=True), right, bdr
 
 
-def run_job(con, job_mod, yyyymm, skip_load=False):
+def run_job(con, job_mod, yyyymm, skip_load=False, stages=None):
     """단일 JOB 실행: load → logic → validate → export"""
     name = job_mod.NAME
     desc = getattr(job_mod, "DESC", "")
+    # stages가 지정되면 해당 단계만 실행, 아니면 전체 실행
+    run_all = stages is None
 
     log.info("=" * 60)
     log.info(f"[{name}] {desc}  (월: {yyyymm})")
+    if not run_all:
+        log.info(f"[{name}] 선택 단계: {stages}")
     log.info("=" * 60)
     t0 = time.time()
 
     # 1. LOAD
-    if skip_load:
+    if run_all and skip_load:
         log.info(f"[{name}] LOAD 스킵")
-    else:
+    elif run_all or "load" in stages:
         log.info(f"[{name}] LOAD")
         loaded, failed = do_load(con, yyyymm, job_mod.TABLES)
         if failed:
             log.warning(f"[{name}] 로드 실패: {failed}")
 
     # 2. LOGIC
-    log.info(f"[{name}] LOGIC")
-    job_mod.logic(con, yyyymm)
+    if run_all or "logic" in stages:
+        log.info(f"[{name}] LOGIC")
+        job_mod.logic(con, yyyymm)
 
     # 3. VALIDATE
-    log.info(f"[{name}] VALIDATE")
-    job_mod.validate(con, yyyymm)
+    if run_all or "validate" in stages:
+        log.info(f"[{name}] VALIDATE")
+        job_mod.validate(con, yyyymm)
 
     # 4. EXPORT
-    sheets = dict(getattr(job_mod, "EXPORT_SHEETS", {}))
-    if sheets:
-        log.info(f"[{name}] EXPORT")
-        do_export(con, yyyymm, name, sheets)
+    if run_all or "export" in stages:
+        sheets = dict(getattr(job_mod, "EXPORT_SHEETS", {}))
+        if sheets:
+            log.info(f"[{name}] EXPORT")
+            do_export(con, yyyymm, name, sheets)
 
     log.info(f"[{name}] 완료  소요: {time.time()-t0:.1f}초")
 
@@ -397,6 +408,8 @@ def main():
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py
   python sas_to_duckdb.py --ym 202601 --job jobs/job2.py --skip-load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
+  python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
+  python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s logic validate
         """
     )
     parser.add_argument("--ym", type=str, default="202601",
@@ -405,6 +418,9 @@ def main():
                         help="실행할 JOB 파일 경로 (예: jobs/job1.py)")
     parser.add_argument("--skip-load", action="store_true",
                         help="LOAD 단계 생략")
+    parser.add_argument("--stage", "-s", nargs="+",
+                        choices=["load", "logic", "validate", "export"],
+                        help="실행할 단계만 지정 (예: --stage load)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="DEBUG 로그 콘솔 출력")
 
@@ -435,7 +451,8 @@ def main():
     try:
         t_total = time.time()
         for mod in job_mods:
-            run_job(con, mod, yyyymm, skip_load=args.skip_load)
+            run_job(con, mod, yyyymm, skip_load=args.skip_load,
+                    stages=args.stage)
         log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
     finally:
         con.close()

@@ -143,13 +143,36 @@ NAME = "job_example"                # JOB 이름 (필수)
 DESC = "예시 JOB"                   # 설명 (선택)
 
 TABLES = {                          # 테이블 정의 (필수)
-    "my_table": {
-        "type": "pipe",             # fwf / pipe / sas7bdat
-        "file": "FILE_{YYYYMM}.DAT",
-        "desc": "설명",
-        "month_col": "CLS_YYMM",   # 월별 누적 기준 (없으면 전체 교체)
-        "numeric": ["AMT_COL"],     # 숫자형 캐스팅 컬럼
-        "cols": ["COL1", "COL2"],   # pipe: 컬럼명 / fwf: [((시작,끝), "이름"), ...]
+    # ── 유형A: 고정폭(fwf) ──
+    "fio841": {
+        "type": "fwf",
+        "file": "fioBtLtrJ841_01_{YYYYMM}.DAT",
+        "desc": "수입보험료",
+        "month_col": "CLS_YYMM",
+        "numeric": ["RP_PRM", "AF_PRM"],
+        "cols": [                   # (시작, 끝) 바이트 위치 + 컬럼명
+            ((0,   6),  "CLS_YYMM"),
+            ((16, 32),  "PLYNO"),
+            ((32, 48),  "RP_PRM"),
+        ],
+    },
+    # ── 유형B: 파이프 구분자(pipe) ──
+    "sa01": {
+        "type": "pipe",
+        "file": "RS100_{YYYYMM}.DAT",
+        "desc": "유지비 배분결과",
+        "month_col": "SLPDT",
+        "numeric": ["DV_RT", "DVAMT"],
+        "cols": ["SLPDT", "SLPNO", "SLP_LNNO", "DVAMT"],
+    },
+    # ── 유형C: SAS 데이터셋(sas7bdat) ──
+    "ey_table": {
+        "type": "sas7bdat",
+        "file": "EY_A{YYYYMM}.sas7bdat",
+        "desc": "이연 데이터",
+        "month_col": None,          # 없으면 전체 교체
+        "numeric": ["AMT"],         # 대부분 자동 감지, 추가 캐스팅 필요 시 지정
+        # cols 불필요 — sas7bdat는 파일 내 컬럼 메타데이터 사용
     },
 }
 
