@@ -307,9 +307,8 @@ def do_load(con, yyyymm, tables: dict):
     base_path = ROOT / "data" / yyyymm
     loaded, failed = [], []
 
-    # FWF / non-FWF 분리
-    fwf_tables = {k: v for k, v in tables.items()
-                  if v.get("type") == "fwf" and Path(v.get("file", "")).suffix.lower() != ".zip"}
+    # FWF / non-FWF 분리 (DuckDB가 .zip 못 읽으면 폴백 처리)
+    fwf_tables = {k: v for k, v in tables.items() if v.get("type") == "fwf"}
     other_tables = {k: v for k, v in tables.items() if k not in fwf_tables}
 
     # ── FWF: DuckDB 네이티브 읽기 (pandas 우회) ──
