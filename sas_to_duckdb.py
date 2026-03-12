@@ -242,7 +242,7 @@ def _upsert(con, name, df, yyyymm, month_col):
         return len(df)
 
     if month_col:
-        con.execute(f"DELETE FROM {name} WHERE {month_col} = '{yyyymm}'")
+        con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
     else:
         log.warning(f"  [{name}] month_col=null → 전체 교체 (기존 데이터 삭제)")
         con.execute(f"DELETE FROM {name}")
@@ -335,7 +335,7 @@ def do_load(con, yyyymm, tables: dict):
                 con.execute(f"CREATE TABLE {name} AS SELECT * FROM {tmp_table}")
             else:
                 if month_col:
-                    con.execute(f"DELETE FROM {name} WHERE {month_col} = '{yyyymm}'")
+                    con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
                 else:
                     con.execute(f"DELETE FROM {name}")
                 con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
