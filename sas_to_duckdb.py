@@ -82,6 +82,7 @@ except ImportError:
 # 설정
 # ══════════════════════════════════════════════
 ROOT = Path(__file__).parent
+MAX_READ_WORKERS = 4
 ENCODINGS = ["cp949", "utf-8"]
 FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
 
@@ -253,7 +254,9 @@ def do_load(con, yyyymm, tables: dict):
     results = []
 
     # 1) 파일 읽기 — 병렬
-    with ThreadPoolExecutor(max_workers=min(4, len(tables))) as pool:
+    workers = min(MAX_READ_WORKERS, len(tables))
+    log.info(f"  파일 읽기 병렬 시작 (workers={workers}, 테이블={len(tables)}개)")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(_read_one, name, cfg, base_path, yyyymm): name
             for name, cfg in tables.items()
