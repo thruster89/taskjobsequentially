@@ -73,7 +73,7 @@ except ImportError:
     log.critical("pip install pandas"); sys.exit(1)
 
 try:
-    from dat_loader import read_fwf_dat, read_fwf_duckdb, read_pipe_dat, read_sas7bdat_file
+    from dat_loader import read_fwf_dat, read_fwf_duckdb, read_pipe_dat, read_pipe_duckdb, read_sas7bdat_file
 except ImportError:
     log.critical("dat_loader.py 없음"); sys.exit(1)
 
@@ -307,38 +307,54 @@ def do_load(con, yyyymm, tables: dict):
     base_path = ROOT / "data" / yyyymm
     loaded, failed = [], []
 
-    # FWF / non-FWF 분리
-    fwf_tables = {k: v for k, v in tables.items()
-                  if v.get("type") == "fwf" and Path(v.get("file", "")).suffix.lower() != ".zip"}
-    other_tables = {k: v for k, v in tables.items() if k not in fwf_tables}
+    # DuckDB 네이티브 대상 (fwf, pipe) / 나머지 분리
+    native_types = {"fwf", "pipe"}
+    native_tables = {k: v for k, v in tables.items() if v.get("type") in native_types}
+    other_tables = {k: v for k, v in tables.items() if k not in native_tables}
 
-    # ── FWF: DuckDB 네이티브 읽기 (pandas 우회) ──
-    for name, cfg in fwf_tables.items():
+    # ── FWF / Pipe: DuckDB 네이티브 읽기 (pandas 우회) ──
+    for name, cfg in native_tables.items():
+        ttype = cfg["type"]
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
             log.info(f"  [읽기] {name:20s} ← {path.name}  (DuckDB 네이티브)")
             ts = time.time()
-            cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"))
-            # _fwf_parsed → 실제 테이블로 upsert
+
+            if ttype == "fwf":
+                cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"))
+                tmp_table = "_fwf_parsed"
+            else:  # pipe
+                cnt = read_pipe_duckdb(con, path, cfg["cols"],
+                                       cfg.get("numeric"),
+                                       cfg.get("delimiter", "|"))
+                tmp_table = "_pipe_parsed"
+
+            # tmp → 실제 테이블로 upsert
             month_col = cfg.get("month_col")
             if not table_exists(con, name):
-                con.execute(f"CREATE TABLE {name} AS SELECT * FROM _fwf_parsed")
+                con.execute(f"CREATE TABLE {name} AS SELECT * FROM {tmp_table}")
             else:
                 if month_col:
                     con.execute(f"DELETE FROM {name} WHERE {month_col} = '{yyyymm}'")
                 else:
                     con.execute(f"DELETE FROM {name}")
-                con.execute(f"INSERT INTO {name} SELECT * FROM _fwf_parsed")
-            con.execute("DROP TABLE IF EXISTS _fwf_parsed")
+                con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
+            con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
             log.info(f"  [읽기] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             loaded.append(name)
         except Exception as e:
             log.warning(f"  [읽기] {name:20s} DuckDB 실패({e}) → pandas 폴백")
             try:
                 ts = time.time()
-                df = read_fwf_dat(path, cfg["cols"],
-                                  numeric=cfg.get("numeric"),
-                                  encodings=ENCODINGS)
+                if ttype == "fwf":
+                    df = read_fwf_dat(path, cfg["cols"],
+                                      numeric=cfg.get("numeric"),
+                                      encodings=ENCODINGS)
+                else:
+                    df = read_pipe_dat(path, cfg["cols"],
+                                       numeric=cfg.get("numeric"),
+                                       encodings=ENCODINGS,
+                                       delimiter=cfg.get("delimiter", "|"))
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
                 log.info(f"  [읽기] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)  (폴백)")
                 loaded.append(name)
@@ -346,7 +362,7 @@ def do_load(con, yyyymm, tables: dict):
                 log.error(f"  [읽기] {name:20s} 폴백도 실패: {e2}")
                 failed.append(name)
 
-    # ── non-FWF: 기존 병렬 읽기 + 순차 적재 ──
+    # ── 나머지 (sas7bdat 등): 기존 병렬 읽기 + 순차 적재 ──
     if other_tables:
         results = []
         workers = min(MAX_READ_WORKERS, len(other_tables))
