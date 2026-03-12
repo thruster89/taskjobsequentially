@@ -282,10 +282,10 @@ def _read_one(name, cfg, base_path, yyyymm):
             f"[{name}] TABLES 정의에 'month_col' 필수 "
             f"(누적: 컬럼명 / 전체교체: null)")
     path = _resolve_path(base_path, cfg["file"], yyyymm)
-    log.info(f"  [{name}] {cfg.get('desc', '')}  ← {path.name}")
+    log.info(f"  [읽기] {name:20s} ← {path.name}")
     ts = time.time()
     df = _load_file(path, cfg, name)
-    log.info(f"  [{name}] {len(df):,}건 읽기완료  ({time.time()-ts:.1f}초)")
+    log.info(f"  [읽기] {name:20s} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     return name, cfg, df
 
 
@@ -308,21 +308,22 @@ def do_load(con, yyyymm, tables: dict):
             try:
                 results.append(fut.result())
             except FileNotFoundError:
-                log.warning(f"  [{name}] 파일 없음 — 건너뜀")
+                log.warning(f"  [읽기] {name:20s} 파일 없음 — 건너뜀")
                 failed.append(name)
             except Exception as e:
-                log.error(f"  [{name}] 읽기 실패: {e}")
+                log.error(f"  [읽기] {name:20s} 실패: {e}")
                 failed.append(name)
 
     # 2) DB 적재 — 순차 (DuckDB 단일 커넥션)
+    log.info(f"  ── 적재 시작 ({len(results)}개 테이블) ──")
     for name, cfg, df in results:
         try:
             ts = time.time()
             cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-            log.info(f"  [{name}] {cnt:,}건 적재  ({time.time()-ts:.1f}초)")
+            log.info(f"  [적재] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             loaded.append(name)
         except Exception as e:
-            log.error(f"  [{name}] 적재 실패: {e}")
+            log.error(f"  [적재] {name:20s} 실패: {e}")
             failed.append(name)
 
     return loaded, failed
