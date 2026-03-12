@@ -4,7 +4,7 @@ JOB 1: 원천 데이터 집계 (보험료)
 1차 파일 수신 후 실행:
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py
 """
-from sas_to_duckdb import sql, table_exists, check, row_count
+from sas_to_duckdb import sql, table_exists, check, check_diff, row_count
 
 NAME = "job1"
 DESC = "원천 데이터 집계 (보험료)"
@@ -131,3 +131,10 @@ def validate(con, yyyymm):
     check(con, "취급기관 이상 (2S+비E)", """
         SELECT COUNT(*) FROM CH
     """, expect="zero")
+
+    # fio841 vs fio843 보험종목별 보험료 대사
+    if table_exists(con, "fio841") and table_exists(con, "fio843"):
+        check_diff(con, "fio841 vs fio843 종목별 보험료",
+            "SELECT INS_IMCD, SUM(RP_PRM) AS AMT FROM fio841 GROUP BY INS_IMCD",
+            "SELECT INS_IMCD, SUM(AP_PRM) AS AMT FROM fio843 GROUP BY INS_IMCD",
+            group_cols=["INS_IMCD"], sum_col="AMT")
