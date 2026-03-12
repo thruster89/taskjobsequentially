@@ -265,11 +265,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     """
     numeric_set = set(numeric or [])
 
-    # 모든 컬럼을 VARCHAR로 읽기 (+더미: 끝에 구분자가 하나 더 있는 파일 대응)
-    cols = [f"'column{i:02d}': 'VARCHAR'" for i in range(len(col_names))]
-    cols.append(f"'_dummy': 'VARCHAR'")
-    columns_def = ", ".join(cols)
-
+    # columns 지정 없이 자동 감지 (trailing delimiter 유무에 관계없이 동작)
     for enc in ["utf-8", "euc-kr", "windows-949", "ms949"]:
         try:
             con.execute(f"""
@@ -280,7 +276,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                     encoding     = '{enc}',
                     null_padding = true,
                     quote        = '',
-                    columns      = {{{columns_def}}})
+                    all_varchar  = true)
             """)
             break
         except Exception:
@@ -288,10 +284,10 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     else:
         raise RuntimeError(f"DuckDB read_csv 인코딩 실패: {path}")
 
-    # 컬럼 리네임 + numeric 캐스팅
+    # 자동 생성된 column0, column1, ... 에서 필요한 컬럼만 리네임 + 캐스팅
     exprs = []
     for i, name in enumerate(col_names):
-        base = f"TRIM(column{i:02d})"
+        base = f"TRIM(column{i})"
         if name in numeric_set:
             base = f"TRY_CAST({base} AS DOUBLE)"
         exprs.append(f"{base} AS {name}")
