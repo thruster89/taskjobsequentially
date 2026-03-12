@@ -557,7 +557,7 @@ def main():
                 h.setLevel(logging.DEBUG)
 
     yyyymm = args.ym
-    db_path = ROOT / "db" / "pipeline.duckdb"
+    db_path = ROOT / "db" / "ifrs4-expense.duckdb"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     log.info(f"대상 월: {yyyymm}")
     log.info(f"DB    : {db_path}")
