@@ -458,8 +458,10 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
 
     # 3. VALIDATE
     if run_all or "validate" in stages:
+        log.info("─" * 60)
         log.info(f"[{name}] VALIDATE")
         job_mod.validate(con, yyyymm)
+        log.info("─" * 60)
 
     # 4. EXPORT
     if run_all or "export" in stages:
