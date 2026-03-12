@@ -266,7 +266,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric_set = set(numeric or [])
 
     # 모든 컬럼을 VARCHAR로 읽기
-    columns_def = ", ".join(f"column{i:02d} VARCHAR" for i in range(len(col_names)))
+    columns_def = ", ".join(f"'column{i:02d}': 'VARCHAR'" for i in range(len(col_names)))
 
     for enc in ["utf-8", "euc-kr", "windows-949", "ms949"]:
         try:
