@@ -73,7 +73,7 @@ except ImportError:
     log.critical("pip install pandas"); sys.exit(1)
 
 try:
-    from dat_loader import read_fwf_dat, read_pipe_dat, read_sas7bdat_file
+    from dat_loader import read_fwf_dat, read_fwf_duckdb, read_pipe_dat, read_sas7bdat_file
 except ImportError:
     log.critical("dat_loader.py 없음"); sys.exit(1)
 
@@ -290,41 +290,80 @@ def _read_one(name, cfg, base_path, yyyymm):
 
 
 def do_load(con, yyyymm, tables: dict):
-    """TABLES dict 기반 로드 (파일 읽기 병렬, DB 적재 순차)"""
+    """TABLES dict 기반 로드 (FWF → DuckDB 네이티브, 나머지 → 병렬 읽기+순차 적재)"""
     base_path = ROOT / "data" / yyyymm
     loaded, failed = [], []
-    results = []
 
-    # 1) 파일 읽기 — 병렬
-    workers = min(MAX_READ_WORKERS, len(tables))
-    log.info(f"  파일 읽기 병렬 시작 (workers={workers}, 테이블={len(tables)}개)")
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(_read_one, name, cfg, base_path, yyyymm): name
-            for name, cfg in tables.items()
-        }
-        for fut in as_completed(futures):
-            name = futures[fut]
-            try:
-                results.append(fut.result())
-            except FileNotFoundError:
-                log.warning(f"  [읽기] {name:20s} 파일 없음 — 건너뜀")
-                failed.append(name)
-            except Exception as e:
-                log.error(f"  [읽기] {name:20s} 실패: {e}")
-                failed.append(name)
+    # FWF / non-FWF 분리
+    fwf_tables = {k: v for k, v in tables.items()
+                  if v.get("type") == "fwf" and Path(v.get("file", "")).suffix.lower() != ".zip"}
+    other_tables = {k: v for k, v in tables.items() if k not in fwf_tables}
 
-    # 2) DB 적재 — 순차 (DuckDB 단일 커넥션)
-    log.info(f"  ── 적재 시작 ({len(results)}개 테이블) ──")
-    for name, cfg, df in results:
+    # ── FWF: DuckDB 네이티브 읽기 (pandas 우회) ──
+    for name, cfg in fwf_tables.items():
         try:
+            path = _resolve_path(base_path, cfg["file"], yyyymm)
+            log.info(f"  [읽기] {name:20s} ← {path.name}  (DuckDB 네이티브)")
             ts = time.time()
-            cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-            log.info(f"  [적재] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+            cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"))
+            # _fwf_parsed → 실제 테이블로 upsert
+            month_col = cfg.get("month_col")
+            if not table_exists(con, name):
+                con.execute(f"CREATE TABLE {name} AS SELECT * FROM _fwf_parsed")
+            else:
+                if month_col:
+                    con.execute(f"DELETE FROM {name} WHERE {month_col} = '{yyyymm}'")
+                else:
+                    con.execute(f"DELETE FROM {name}")
+                con.execute(f"INSERT INTO {name} SELECT * FROM _fwf_parsed")
+            con.execute("DROP TABLE IF EXISTS _fwf_parsed")
+            log.info(f"  [읽기] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             loaded.append(name)
         except Exception as e:
-            log.error(f"  [적재] {name:20s} 실패: {e}")
-            failed.append(name)
+            log.warning(f"  [읽기] {name:20s} DuckDB 실패({e}) → pandas 폴백")
+            try:
+                ts = time.time()
+                df = read_fwf_dat(path, cfg["cols"],
+                                  numeric=cfg.get("numeric"),
+                                  encodings=ENCODINGS)
+                cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
+                log.info(f"  [읽기] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)  (폴백)")
+                loaded.append(name)
+            except Exception as e2:
+                log.error(f"  [읽기] {name:20s} 폴백도 실패: {e2}")
+                failed.append(name)
+
+    # ── non-FWF: 기존 병렬 읽기 + 순차 적재 ──
+    if other_tables:
+        results = []
+        workers = min(MAX_READ_WORKERS, len(other_tables))
+        log.info(f"  파일 읽기 병렬 시작 (workers={workers}, 테이블={len(other_tables)}개)")
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(_read_one, name, cfg, base_path, yyyymm): name
+                for name, cfg in other_tables.items()
+            }
+            for fut in as_completed(futures):
+                name = futures[fut]
+                try:
+                    results.append(fut.result())
+                except FileNotFoundError:
+                    log.warning(f"  [읽기] {name:20s} 파일 없음 — 건너뜀")
+                    failed.append(name)
+                except Exception as e:
+                    log.error(f"  [읽기] {name:20s} 실패: {e}")
+                    failed.append(name)
+
+        log.info(f"  ── 적재 시작 ({len(results)}개 테이블) ──")
+        for name, cfg, df in results:
+            try:
+                ts = time.time()
+                cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
+                log.info(f"  [적재] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+                loaded.append(name)
+            except Exception as e:
+                log.error(f"  [적재] {name:20s} 실패: {e}")
+                failed.append(name)
 
     return loaded, failed
 
