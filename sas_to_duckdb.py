@@ -17,6 +17,7 @@ import logging
 import time
 import argparse
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib.util
 from pathlib import Path
 from datetime import datetime
@@ -235,29 +236,52 @@ def load_job_module(job_path: str):
 # 파이프라인 (load → logic → validate → export)
 # ══════════════════════════════════════════════
 
+def _read_one(name, cfg, base_path, yyyymm):
+    """단일 테이블 파일 읽기 (병렬 실행용)"""
+    if "month_col" not in cfg:
+        raise KeyError(
+            f"[{name}] TABLES 정의에 'month_col' 필수 "
+            f"(누적: 컬럼명 / 전체교체: null)")
+    path = _resolve_path(base_path, cfg["file"], yyyymm)
+    log.info(f"  [{name}] {cfg.get('desc', '')}  ← {path.name}")
+    ts = time.time()
+    df = _load_file(path, cfg, name)
+    log.info(f"  [{name}] {len(df):,}건 읽기완료  ({time.time()-ts:.1f}초)")
+    return name, cfg, df
+
+
 def do_load(con, yyyymm, tables: dict):
-    """TABLES dict 기반 로드"""
+    """TABLES dict 기반 로드 (파일 읽기 병렬, DB 적재 순차)"""
     base_path = ROOT / "data" / yyyymm
     loaded, failed = [], []
+    results = []
 
-    for name, cfg in tables.items():
+    # 1) 파일 읽기 — 병렬
+    with ThreadPoolExecutor(max_workers=min(4, len(tables))) as pool:
+        futures = {
+            pool.submit(_read_one, name, cfg, base_path, yyyymm): name
+            for name, cfg in tables.items()
+        }
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                results.append(fut.result())
+            except FileNotFoundError:
+                log.warning(f"  [{name}] 파일 없음 — 건너뜀")
+                failed.append(name)
+            except Exception as e:
+                log.error(f"  [{name}] 읽기 실패: {e}")
+                failed.append(name)
+
+    # 2) DB 적재 — 순차 (DuckDB 단일 커넥션)
+    for name, cfg, df in results:
         try:
-            if "month_col" not in cfg:
-                raise KeyError(
-                    f"[{name}] TABLES 정의에 'month_col' 필수 "
-                    f"(누적: 컬럼명 / 전체교체: null)")
-            path = _resolve_path(base_path, cfg["file"], yyyymm)
-            log.info(f"  [{name}] {cfg.get('desc', '')}  ← {path.name}")
             ts = time.time()
-            df = _load_file(path, cfg, name)
             cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
             log.info(f"  [{name}] {cnt:,}건 적재  ({time.time()-ts:.1f}초)")
             loaded.append(name)
-        except FileNotFoundError:
-            log.warning(f"  [{name}] 파일 없음 — 건너뜀")
-            failed.append(name)
         except Exception as e:
-            log.error(f"  [{name}] 실패: {e}")
+            log.error(f"  [{name}] 적재 실패: {e}")
             failed.append(name)
 
     return loaded, failed
