@@ -273,10 +273,12 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _pipe_raw AS
                 SELECT * FROM read_csv('{path}',
-                    delim      = '{delimiter}',
-                    header     = false,
-                    encoding   = '{enc}',
-                    columns    = {{{columns_def}}})
+                    delim        = '{delimiter}',
+                    header       = false,
+                    encoding     = '{enc}',
+                    null_padding = true,
+                    quote        = '',
+                    columns      = {{{columns_def}}})
             """)
             break
         except Exception:
