@@ -26,6 +26,8 @@ from datetime import datetime
 # ══════════════════════════════════════════════
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger("pipeline")
+    if logger.handlers:
+        return logger
     logger.setLevel(logging.DEBUG)
 
     class AlignedFormatter(logging.Formatter):
