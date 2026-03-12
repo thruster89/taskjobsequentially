@@ -62,17 +62,13 @@ def setup_logger() -> logging.Logger:
 log = setup_logger()
 
 # ── 의존성 ───────────────────────────────────
-log.info(f"Python {sys.version.split()[0]}")
-
 try:
     import duckdb
-    log.info(f"duckdb {duckdb.__version__}")
 except ImportError:
     log.critical("pip install duckdb"); sys.exit(1)
 
 try:
     import pandas as pd
-    log.info(f"pandas {pd.__version__}")
 except ImportError:
     log.critical("pip install pandas"); sys.exit(1)
 
@@ -86,6 +82,7 @@ except ImportError:
 # 설정
 # ══════════════════════════════════════════════
 ROOT = Path(__file__).parent
+MAX_READ_WORKERS = 4
 ENCODINGS = ["cp949", "utf-8"]
 FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
 
@@ -101,10 +98,10 @@ def _dw(s):
     return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in s)
 
 
-def sql(con, label, query):
+def sql(con, label, query, params=None):
     """SQL 실행 + CREATE TABLE이면 건수 로깅"""
     t = time.time()
-    con.execute(query)
+    con.execute(query, params or [])
     m = re.search(r"CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
                   query, re.IGNORECASE)
     if m:
@@ -257,7 +254,9 @@ def do_load(con, yyyymm, tables: dict):
     results = []
 
     # 1) 파일 읽기 — 병렬
-    with ThreadPoolExecutor(max_workers=min(4, len(tables))) as pool:
+    workers = min(MAX_READ_WORKERS, len(tables))
+    log.info(f"  파일 읽기 병렬 시작 (workers={workers}, 테이블={len(tables)}개)")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(_read_one, name, cfg, base_path, yyyymm): name
             for name, cfg in tables.items()
@@ -376,7 +375,8 @@ def _write_summary_sheet(writer, yyyymm, summary):
     c_t.number_format, c_t.font, c_t.alignment, c_t.border = "#,##0", Font(bold=True), right, bdr
 
 
-def run_job(con, job_mod, yyyymm, skip_load=False, stages=None):
+def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
+            only_tables=None):
     """단일 JOB 실행: load → logic → validate → export"""
     name = job_mod.NAME
     desc = getattr(job_mod, "DESC", "")
@@ -387,6 +387,8 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None):
     log.info(f"[{name}] {desc}  (월: {yyyymm})")
     if not run_all:
         log.info(f"[{name}] 선택 단계: {stages}")
+    if only_tables:
+        log.info(f"[{name}] 선택 테이블: {only_tables}")
     log.info("=" * 60)
     t0 = time.time()
 
@@ -394,8 +396,16 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None):
     if run_all and skip_load:
         log.info(f"[{name}] LOAD 스킵")
     elif run_all or "load" in stages:
-        log.info(f"[{name}] LOAD")
-        loaded, failed = do_load(con, yyyymm, job_mod.TABLES)
+        tables = job_mod.TABLES
+        if only_tables:
+            unknown = set(only_tables) - set(tables)
+            if unknown:
+                log.warning(f"[{name}] 존재하지 않는 테이블 무시: {unknown}")
+            tables = {k: v for k, v in tables.items() if k in only_tables}
+            if not tables:
+                log.warning(f"[{name}] 로드할 테이블이 없습니다")
+        log.info(f"[{name}] LOAD ({len(tables)}개 테이블)")
+        loaded, failed = do_load(con, yyyymm, tables)
         if failed:
             log.warning(f"[{name}] 로드 실패: {failed}")
 
@@ -434,6 +444,7 @@ def main():
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s logic validate
+  python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -t fio841 fio842
         """
     )
     parser.add_argument("--ym", type=str, default="202601",
@@ -445,10 +456,16 @@ def main():
     parser.add_argument("--stage", "-s", nargs="+",
                         choices=["load", "logic", "validate", "export"],
                         help="실행할 단계만 지정 (예: --stage load)")
+    parser.add_argument("--tables", "-t", nargs="+",
+                        help="로드할 테이블명만 지정 (예: --tables fio841 fio842)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="DEBUG 로그 콘솔 출력")
 
     args = parser.parse_args()
+
+    log.info(f"Python {sys.version.split()[0]}")
+    log.info(f"duckdb {duckdb.__version__}")
+    log.info(f"pandas {pd.__version__}")
 
     if args.verbose:
         for h in log.handlers:
@@ -476,7 +493,7 @@ def main():
         t_total = time.time()
         for mod in job_mods:
             run_job(con, mod, yyyymm, skip_load=args.skip_load,
-                    stages=args.stage)
+                    stages=args.stage, only_tables=args.tables)
         log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
     finally:
         con.close()
