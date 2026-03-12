@@ -141,6 +141,48 @@ def check(con, label, query, expect="zero"):
     return ok
 
 
+def check_diff(con, label, query_a, query_b, group_cols, sum_col,
+               threshold=1):
+    """
+    두 쿼리 결과를 group_cols 기준 FULL OUTER JOIN하여
+    sum_col 차이가 threshold 초과인 행을 로그 출력.
+
+    Returns: bool — 차이 없으면 True
+    """
+    join_cond = " AND ".join(
+        f"a.{c} IS NOT DISTINCT FROM b.{c}" for c in group_cols)
+    coalesce_keys = ", ".join(
+        f"COALESCE(a.{c}, b.{c}) AS {c}" for c in group_cols)
+
+    diff_sql = f"""
+        WITH a AS ({query_a}),
+             b AS ({query_b})
+        SELECT {coalesce_keys},
+               COALESCE(a.{sum_col}, 0) AS val_a,
+               COALESCE(b.{sum_col}, 0) AS val_b,
+               COALESCE(a.{sum_col}, 0) - COALESCE(b.{sum_col}, 0) AS diff
+        FROM a FULL OUTER JOIN b ON {join_cond}
+        WHERE ABS(COALESCE(a.{sum_col}, 0) - COALESCE(b.{sum_col}, 0)) > {threshold}
+        ORDER BY ABS(COALESCE(a.{sum_col}, 0) - COALESCE(b.{sum_col}, 0)) DESC
+    """
+
+    rows = con.execute(diff_sql).fetchall()
+    total = len(rows)
+    ok = total == 0
+    mark = "OK" if ok else "NG"
+    log.info(f"  [{mark}] {label + ' ' * max(0, 45 - _dw(label))}  차이 {total:,}건")
+
+    if not ok:
+        show = rows[:20]
+        for r in show:
+            keys = ", ".join(f"{c}={r[i]}" for i, c in enumerate(group_cols))
+            val_a, val_b, diff = r[len(group_cols)], r[len(group_cols)+1], r[len(group_cols)+2]
+            log.info(f"       {keys:30s}  A: {val_a:>14,.0f}  B: {val_b:>14,.0f}  diff: {diff:>14,.0f}")
+        if total > 20:
+            log.info(f"       ... 외 {total - 20:,}건")
+    return ok
+
+
 def row_count(con, table):
     """테이블 건수 로깅"""
     if not table_exists(con, table):
