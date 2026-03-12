@@ -287,7 +287,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     # 자동 생성된 column0, column1, ... 에서 필요한 컬럼만 리네임 + 캐스팅
     exprs = []
     for i, name in enumerate(col_names):
-        base = f"TRIM(column{i})"
+        base = f"TRIM(column{i:02d})"
         if name in numeric_set:
             base = f"TRY_CAST({base} AS DOUBLE)"
         exprs.append(f"{base} AS {name}")
