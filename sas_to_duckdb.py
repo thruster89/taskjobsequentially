@@ -595,6 +595,13 @@ def do_export(con, yyyymm, job_name, sheet_map):
                     df = con.execute(sql).df()
                     sname = sheet[:31]
                     df.to_excel(writer, sheet_name=sname, index=False)
+                    # 정수/실수 컬럼에 #,##0 서식 적용 (E+ 방지)
+                    ws = writer.sheets[sname]
+                    for col_idx, dtype in enumerate(df.dtypes, 1):
+                        if dtype.kind in ('i', 'u', 'f'):
+                            fmt = '#,##0.##' if dtype.kind == 'f' else '#,##0'
+                            for row_idx in range(2, len(df) + 2):
+                                ws.cell(row=row_idx, column=col_idx).number_format = fmt
                     el = time.time() - ts
                     summary.append((tbl, sname, len(df), el))
                     log.info(f"    {_pad(sname, 25)}  {len(df):>10,}건  ({el:.1f}초)")
