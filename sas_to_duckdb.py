@@ -180,6 +180,12 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
             log.info(f"       {keys:30s}  A: {val_a:>14,.0f}  B: {val_b:>14,.0f}  diff: {diff:>14,.0f}")
         if total > 20:
             log.info(f"       ... 외 {total - 20:,}건")
+        # 합계
+        gc = len(group_cols)
+        sum_a = sum(r[gc] for r in rows)
+        sum_b = sum(r[gc + 1] for r in rows)
+        sum_d = sum(r[gc + 2] for r in rows)
+        log.info(f"       {'[합계]':30s}  A: {sum_a:>14,.0f}  B: {sum_b:>14,.0f}  diff: {sum_d:>14,.0f}")
 
         # CSV 저장
         import csv
