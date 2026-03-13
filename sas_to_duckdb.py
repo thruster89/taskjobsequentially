@@ -370,16 +370,20 @@ def load_job_module(job_path: str):
 # ══════════════════════════════════════════════
 
 def _read_one(name, cfg, base_path, yyyymm):
-    """단일 테이블 파일 읽기 (병렬 실행용)"""
+    """단일 테이블 읽기 (병렬 실행용) — 파일/Oracle 모두 지원"""
     if "month_col" not in cfg:
         raise KeyError(
             f"[{name}] TABLES 정의에 'month_col' 필수 "
             f"(누적: 컬럼명 / 전체교체: null)")
-    path = _resolve_path(base_path, cfg["file"], yyyymm)
-    log.info(f"  [읽기] {name:20s} ← {path.name}")
+
     ts = time.time()
-    df = _load_file(path, cfg, name)
-    log.info(f"  [읽기] {name:20s} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+    if cfg.get("type") == "oracle":
+        df = _load_oracle(cfg, name, yyyymm)
+    else:
+        path = _resolve_path(base_path, cfg["file"], yyyymm)
+        log.info(f"  [읽기] {name:20s} ← {path.name}")
+        df = _load_file(path, cfg, name)
+        log.info(f"  [읽기] {name:20s} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     return name, cfg, df
 
 
@@ -388,24 +392,10 @@ def do_load(con, yyyymm, tables: dict):
     base_path = ROOT / "data" / yyyymm
     loaded, failed = [], []
 
-    # ── Oracle 테이블 먼저 처리 ──
-    oracle_tables = {k: v for k, v in tables.items() if v.get("type") == "oracle"}
-    for name, cfg in oracle_tables.items():
-        try:
-            ts = time.time()
-            df = _load_oracle(cfg, name, yyyymm)
-            cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-            log.info(f"  [적재] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
-            loaded.append(name)
-        except Exception as e:
-            log.error(f"  [Oracle] {name:20s} 실패: {e}")
-            failed.append(name)
-
-    # DuckDB 네이티브 대상 (fwf, pipe) / 나머지 분리
+    # DuckDB 네이티브 대상 (fwf, pipe) / 나머지 (sas7bdat, oracle 등) 분리
     native_types = {"fwf", "pipe"}
-    non_oracle = {k: v for k, v in tables.items() if k not in oracle_tables}
-    native_tables = {k: v for k, v in non_oracle.items() if v.get("type") in native_types}
-    other_tables = {k: v for k, v in non_oracle.items() if k not in native_tables}
+    native_tables = {k: v for k, v in tables.items() if v.get("type") in native_types}
+    other_tables = {k: v for k, v in tables.items() if k not in native_tables}
 
     # ── FWF / Pipe: DuckDB 네이티브 읽기 (pandas 우회) ──
     for name, cfg in native_tables.items():
@@ -457,11 +447,11 @@ def do_load(con, yyyymm, tables: dict):
                 log.error(f"  [읽기] {name:20s} 폴백도 실패: {e2}")
                 failed.append(name)
 
-    # ── 나머지 (sas7bdat 등): 기존 병렬 읽기 + 순차 적재 ──
+    # ── 나머지 (sas7bdat, oracle 등): 병렬 읽기 + 순차 적재 ──
     if other_tables:
         results = []
         workers = min(MAX_READ_WORKERS, len(other_tables))
-        log.info(f"  파일 읽기 병렬 시작 (workers={workers}, 테이블={len(other_tables)}개)")
+        log.info(f"  병렬 읽기 시작 (workers={workers}, 테이블={len(other_tables)}개)")
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(_read_one, name, cfg, base_path, yyyymm): name
