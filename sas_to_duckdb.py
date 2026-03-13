@@ -218,6 +218,30 @@ def _resolve_path(base, file_template, yyyymm):
     raise FileNotFoundError(f"파일 없음: {stem}.* (위치: {base})")
 
 
+def _load_oracle(cfg, name, yyyymm):
+    """Oracle DB에서 SQL로 데이터 추출 → DataFrame"""
+    try:
+        import oracledb
+    except ImportError:
+        raise ImportError(
+            "oracledb 패키지가 필요합니다: pip install oracledb")
+
+    dsn = cfg["dsn"]
+    user = cfg.get("user", "")
+    password = cfg.get("password", "")
+    sql_text = cfg["sql"].replace("{YYYYMM}", yyyymm)
+
+    log.info(f"  [Oracle] {name:20s} ← {dsn}")
+    log.debug(f"  [Oracle] SQL: {sql_text[:120]}...")
+
+    with oracledb.connect(user=user, password=password, dsn=dsn) as conn:
+        import pandas as pd
+        df = pd.read_sql(sql_text, conn)
+
+    log.info(f"  [Oracle] {name:20s} {len(df):>12,}건")
+    return df
+
+
 def _load_file(path, cfg, name):
     """단일 파일 읽기 → DataFrame"""
     numeric = cfg.get("numeric", [])
@@ -307,10 +331,24 @@ def do_load(con, yyyymm, tables: dict):
     base_path = ROOT / "data" / yyyymm
     loaded, failed = [], []
 
+    # ── Oracle 테이블 먼저 처리 ──
+    oracle_tables = {k: v for k, v in tables.items() if v.get("type") == "oracle"}
+    for name, cfg in oracle_tables.items():
+        try:
+            ts = time.time()
+            df = _load_oracle(cfg, name, yyyymm)
+            cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
+            log.info(f"  [적재] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+            loaded.append(name)
+        except Exception as e:
+            log.error(f"  [Oracle] {name:20s} 실패: {e}")
+            failed.append(name)
+
     # DuckDB 네이티브 대상 (fwf, pipe) / 나머지 분리
     native_types = {"fwf", "pipe"}
-    native_tables = {k: v for k, v in tables.items() if v.get("type") in native_types}
-    other_tables = {k: v for k, v in tables.items() if k not in native_tables}
+    non_oracle = {k: v for k, v in tables.items() if k not in oracle_tables}
+    native_tables = {k: v for k, v in non_oracle.items() if v.get("type") in native_types}
+    other_tables = {k: v for k, v in non_oracle.items() if k not in native_tables}
 
     # ── FWF / Pipe: DuckDB 네이티브 읽기 (pandas 우회) ──
     for name, cfg in native_tables.items():
