@@ -416,15 +416,12 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
     loaded, failed = [], []
     tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
-    # DuckDB 네이티브 대상 (fwf, pipe) / 나머지 (sas7bdat, oracle 등) 분리
-    # fwf + prn 파일은 바이트 슬라이싱이 필요하므로 native 제외 → pandas 경로
-    native_types = {"fwf", "pipe"}
+    # DuckDB 네이티브 대상 (pipe만) / 나머지 (fwf, sas7bdat, oracle 등) 분리
+    # fwf 는 SAS colspec 이 바이트 위치이므로 SUBSTR(글자 기반) 대신
+    # 바이트 슬라이싱 pandas 경로를 사용해야 cp949 한글 위치가 밀리지 않음
+    native_types = {"pipe"}
     def _is_native(cfg):
-        if cfg.get("type") not in native_types:
-            return False
-        if cfg.get("type") == "fwf" and cfg.get("file", "").lower().endswith(".prn"):
-            return False
-        return True
+        return cfg.get("type") in native_types
     native_tables = {k: v for k, v in tables.items() if _is_native(v)}
     other_tables = {k: v for k, v in tables.items() if k not in native_tables}
 
