@@ -434,13 +434,19 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 timer = threading.Timer(tmo, lambda: con.interrupt())
                 timer.start()
 
+            # 테이블 정의에 encoding 있으면 우선 사용
+            enc_override = cfg.get("encoding")
+            encs = [enc_override] if enc_override else None
+
             if ttype == "fwf":
-                cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"))
+                cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"),
+                                      encodings=encs)
                 tmp_table = "_fwf_parsed"
             else:  # pipe
                 cnt = read_pipe_duckdb(con, path, cfg["cols"],
                                        cfg.get("numeric"),
-                                       cfg.get("delimiter", "|"))
+                                       cfg.get("delimiter", "|"),
+                                       encodings=encs)
                 tmp_table = "_pipe_parsed"
 
             if timer:
@@ -472,15 +478,16 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
             try:
                 ts_fb = time.time()
                 # pandas 폴백에도 타임아웃 적용
+                pd_encs = [enc_override] if enc_override else ENCODINGS
                 def _pandas_fallback():
                     if ttype == "fwf":
                         return read_fwf_dat(path, cfg["cols"],
                                             numeric=cfg.get("numeric"),
-                                            encodings=ENCODINGS)
+                                            encodings=pd_encs)
                     else:
                         return read_pipe_dat(path, cfg["cols"],
                                              numeric=cfg.get("numeric"),
-                                             encodings=ENCODINGS,
+                                             encodings=pd_encs,
                                              delimiter=cfg.get("delimiter", "|"))
 
                 if tmo > 0:
