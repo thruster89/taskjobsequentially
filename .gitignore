@@ -1,2 +1,3 @@
 __pycache__/
 logs/
+oracle_config.py
