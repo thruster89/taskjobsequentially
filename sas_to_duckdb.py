@@ -575,17 +575,20 @@ def do_export(con, yyyymm, job_name, sheet_map):
     summary = []
     with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
         for tbl, cfg in sheet_map.items():
-            try:
-                ts = time.time()
-                sql, sheet = _build_export_query(tbl, cfg)
-                df = con.execute(sql).df()
-                sname = sheet[:31]
-                df.to_excel(writer, sheet_name=sname, index=False)
-                el = time.time() - ts
-                summary.append((tbl, sname, len(df), el))
-                log.info(f"    {sname:25s}  {len(df):>10,}건  ({el:.1f}초)")
-            except Exception as e:
-                log.warning(f"    {sheet if isinstance(cfg, str) else cfg.get('sheet', tbl)} 건너뜀: {e}")
+            # 리스트이면 같은 테이블에서 여러 시트 추출
+            cfgs = cfg if isinstance(cfg, list) else [cfg]
+            for single_cfg in cfgs:
+                try:
+                    ts = time.time()
+                    sql, sheet = _build_export_query(tbl, single_cfg)
+                    df = con.execute(sql).df()
+                    sname = sheet[:31]
+                    df.to_excel(writer, sheet_name=sname, index=False)
+                    el = time.time() - ts
+                    summary.append((tbl, sname, len(df), el))
+                    log.info(f"    {sname:25s}  {len(df):>10,}건  ({el:.1f}초)")
+                except Exception as e:
+                    log.warning(f"    {sheet if isinstance(single_cfg, str) else single_cfg.get('sheet', tbl)} 건너뜀: {e}")
 
         _write_summary_sheet(writer, yyyymm, summary)
 
