@@ -321,7 +321,8 @@ def _load_file(path, cfg, name):
     """단일 파일 읽기 → DataFrame"""
     numeric = cfg.get("numeric", [])
     if cfg["type"] == "fwf":
-        return read_fwf_dat(path, cfg["cols"], numeric=numeric, encodings=ENCODINGS)
+        return read_fwf_dat(path, cfg["cols"], numeric=numeric,
+                            encoding=cfg.get("encoding", "cp949"))
     elif cfg["type"] == "pipe":
         return read_pipe_dat(path, cfg["cols"], numeric=numeric,
                              encodings=ENCODINGS, delimiter=cfg.get("delimiter", "|"))
@@ -416,8 +417,15 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
     tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
     # DuckDB 네이티브 대상 (fwf, pipe) / 나머지 (sas7bdat, oracle 등) 분리
+    # fwf + prn 파일은 바이트 슬라이싱이 필요하므로 native 제외 → pandas 경로
     native_types = {"fwf", "pipe"}
-    native_tables = {k: v for k, v in tables.items() if v.get("type") in native_types}
+    def _is_native(cfg):
+        if cfg.get("type") not in native_types:
+            return False
+        if cfg.get("type") == "fwf" and cfg.get("file", "").lower().endswith(".prn"):
+            return False
+        return True
+    native_tables = {k: v for k, v in tables.items() if _is_native(v)}
     other_tables = {k: v for k, v in tables.items() if k not in native_tables}
 
     # ── FWF / Pipe: DuckDB 네이티브 읽기 (pandas 우회) ──
@@ -483,7 +491,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                     if ttype == "fwf":
                         return read_fwf_dat(path, cfg["cols"],
                                             numeric=cfg.get("numeric"),
-                                            encodings=pd_encs)
+                                            encoding=cfg.get("encoding", "cp949"))
                     else:
                         return read_pipe_dat(path, cfg["cols"],
                                              numeric=cfg.get("numeric"),
