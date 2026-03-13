@@ -65,6 +65,30 @@ def open_file(path: Path, encoding: str):
         return open(path, "r", encoding=encoding)
 
 
+def open_file_binary(path: Path):
+    """
+    확장자에 따라 바이너리 파일 객체 반환 (고정폭 바이트 슬라이싱용)
+
+    지원 포맷:
+      .zip → zip 내부 첫 번째 파일
+      .gz  → gzip 바이너리 스트림
+      그 외 → 일반 바이너리 열기
+    """
+    suffix = path.suffix.lower()
+
+    if suffix == ".zip":
+        zf = zipfile.ZipFile(path)
+        inner = zf.namelist()[0]
+        log.debug(f"zip 내부 파일: {inner}")
+        return zf.open(inner)
+
+    elif suffix == ".gz":
+        return gzip.open(path, "rb")
+
+    else:
+        return open(path, "rb")
+
+
 # ══════════════════════════════════════════════
 # 인코딩 자동 감지 래퍼
 # ══════════════════════════════════════════════
@@ -108,50 +132,47 @@ def read_fwf_dat(
     path      : Path,
     col_defs  : list,
     numeric   : list = None,
-    encodings : list = None,
+    encoding  : str  = "cp949",
 ) -> pd.DataFrame:
     """
-    유형A 고정폭 DAT 파일 읽기 (벡터 슬라이싱 방식)
+    유형A 고정폭 DAT/PRN 파일 읽기 (바이트 슬라이싱 방식)
+
+    바이트 단위로 슬라이싱한 뒤 컬럼별로 디코딩하므로
+    cp949 한글(2바이트)이 포함되어도 위치가 밀리지 않음.
 
     SAS 변환 규칙:
         @N  col  $W.  →  colspecs = (N-1, N-1+W),  name = "col"
         @N  col   W.  →  동일 (숫자형도 위치 규칙은 같음)
 
     Args:
-        path     : 파일 경로 (.DAT / .zip / .gz 모두 가능)
+        path     : 파일 경로 (.DAT / .prn / .zip / .gz 모두 가능)
         col_defs : [(시작, 끝), "컬럼명"] 형식의 리스트
                    예) [((0, 6), "CLS_YYMM"), ((16, 32), "PLYNO"), ...]
         numeric  : 숫자형으로 캐스팅할 컬럼명 리스트 (선택)
-        encodings: 시도할 인코딩 목록 (기본값: 모듈 ENCODINGS)
+        encoding : 디코딩 인코딩 (기본값: cp949)
 
     Returns:
         DataFrame (모든 컬럼 str, numeric 지정 컬럼은 float)
     """
     colspecs = [c[0] for c in col_defs]
     names    = [c[1] for c in col_defs]
-    encodings = encodings or ENCODINGS
     numeric = numeric or []
 
-    # 파일 전체를 한 컬럼(Series)으로 읽은 뒤 str 슬라이싱 → pd.read_fwf 대비 3~5배 빠름
-    lines = None
-    for enc in encodings:
-        try:
-            f = open_file(path, enc)
-            raw = f.read()
-            f.close()
-            lines = raw.splitlines()
-            break
-        except (UnicodeDecodeError, UnicodeError):
-            log.debug(f"인코딩 {enc} 실패 → 다음 시도")
-    if lines is None:
-        raise UnicodeDecodeError("all", b"", 0, 1, "모든 인코딩 실패")
+    # 바이트 단위로 읽어서 줄 분리
+    f = open_file_binary(path)
+    raw_lines = f.read().splitlines()
+    f.close()
 
-    s = pd.Series(lines, dtype=str)
-    data = {name: s.str[start:end] for (start, end), name in zip(colspecs, names)}
+    # 바이트 슬라이싱 → 컬럼별 디코딩
+    data = {}
+    for (start, end), name in zip(colspecs, names):
+        data[name] = [
+            line[start:end].decode(encoding, errors="replace").strip()
+            for line in raw_lines
+        ]
+
     df = pd.DataFrame(data)
-
     df = df.fillna("")
-    df = _strip_str(df, exclude=numeric)
     df = _cast_numeric(df, numeric)
     return df
 
