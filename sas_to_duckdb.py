@@ -112,7 +112,7 @@ def sql(con, label, query, params=None):
     if m:
         tbl = m.group(1)
         cnt = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-        log.info(f"  {label + ' ' * max(0, 50 - _dw(label))}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
+        log.info(f"  {_pad(label, 50)}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
 
 
 def table_exists(con, name):
@@ -142,7 +142,7 @@ def check(con, label, query, expect="zero"):
     else:
         ok = cnt == expect
     mark = "OK" if ok else "NG"
-    log.info(f"  [{mark}] {label + ' ' * max(0, 45 - _dw(label))}  {cnt:>12,}건")
+    log.info(f"  [{mark}] {_pad(label, 45)}  {cnt:>12,}건")
     return ok
 
 
@@ -175,7 +175,7 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
     total = len(rows)
     ok = total == 0
     mark = "OK" if ok else "NG"
-    log.info(f"  [{mark}] {label + ' ' * max(0, 45 - _dw(label))}  차이 {total:,}건")
+    log.info(f"  [{mark}] {_pad(label, 45)}  차이 {total:,}건")
 
     if not ok:
         show = rows[:20]
@@ -213,7 +213,7 @@ def row_count(con, table):
         log.warning(f"  [--] {_pad(table, 45)}  테이블 없음")
         return 0
     cnt = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-    log.info(f"  [OK] {table + ' ' * max(0, 45 - _dw(table))}  {cnt:>12,}건")
+    log.info(f"  [OK] {_pad(table, 45)}  {cnt:>12,}건")
     return cnt
 
 
