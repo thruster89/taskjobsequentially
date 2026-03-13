@@ -521,30 +521,27 @@ def _build_export_query(tbl, cfg):
 
 
 def _next_output_path(out_dir, job_name, yyyymm):
-    """출력 파일 경로 결정. 항상 다음 순번으로 생성."""
+    """출력 파일 경로 결정. 항상 다음 순번으로 생성 (v0.01, v0.02, ... v0.99, v1.00, ...)."""
     import glob as _glob
+    import re
     prefix = f"{job_name}_{yyyymm}"
 
-    # 기존 파일에서 최대 순번 찾기
+    # 기존 파일에서 최대 순번 찾기 (총 순번을 정수로 환산: v0.01=1, v1.00=100)
     existing = _glob.glob(str(out_dir / f"{prefix}*.xlsx"))
-    max_ver = 0
+    max_seq = 0
     for f in existing:
-        fname = Path(f).stem  # e.g. job1_202602_v3
-        if fname == prefix:
-            max_ver = max(max_ver, 1)
-        elif fname.startswith(prefix + "_v"):
-            try:
-                v = int(fname.split("_v")[-1])
-                max_ver = max(max_ver, v)
-            except ValueError:
-                pass
+        fname = Path(f).stem  # e.g. job1_202602_v0.03 or job1_202602_v1.05
+        m = re.search(r"_v(\d+)\.(\d{2})$", fname)
+        if m:
+            seq = int(m.group(1)) * 99 + int(m.group(2))
+            max_seq = max(max_seq, seq)
 
-    if max_ver == 0:
-        # 첫 실행
-        return out_dir / f"{prefix}.xlsx"
-
-    next_ver = max_ver + 1
-    return out_dir / f"{prefix}_v{next_ver}.xlsx"
+    next_seq = max_seq + 1
+    major, minor = divmod(next_seq, 99)
+    if minor == 0:
+        major -= 1
+        minor = 99
+    return out_dir / f"{prefix}_v{major}.{minor:02d}.xlsx"
 
 
 def do_export(con, yyyymm, job_name, sheet_map):
