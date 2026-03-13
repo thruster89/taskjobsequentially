@@ -741,7 +741,7 @@ def _write_summary_sheet(writer, yyyymm, summary):
         ws.cell(row=row, column=1, value=i).alignment = center
         ws.cell(row=row, column=2, value=tbl).alignment = left
         c_s = ws.cell(row=row, column=3, value=sname)
-        c_s.hyperlink, c_s.font, c_s.alignment = f"#{sname}!A1", link_font, left
+        c_s.hyperlink, c_s.font, c_s.alignment = f"#'{sname}'!A1", link_font, left
         c_c = ws.cell(row=row, column=4, value=cnt)
         c_c.number_format, c_c.alignment = "#,##0", right
         ws.cell(row=row, column=5, value=round(el, 1)).alignment = center
