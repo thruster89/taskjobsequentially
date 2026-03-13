@@ -538,11 +538,12 @@ def _next_output_path(out_dir, job_name, yyyymm):
     max_minor = 0  # 해당 메이저의 최대 마이너
     for f in existing:
         fname = Path(f).stem
-        m = re.search(r"_v(\d+)\.(\d+)$", fname)
+        # v1.04, v1.0, v1.00 → major.minor / v1, v2 → major only (minor=0)
+        m = re.search(r"_v(\d+)(?:\.(\d+))?$", fname)
         if not m:
             continue
         major = int(m.group(1))
-        minor = int(m.group(2))
+        minor = int(m.group(2)) if m.group(2) is not None else 0
         if major > max_major:
             max_major = major
             max_minor = minor
