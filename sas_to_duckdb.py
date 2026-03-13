@@ -149,6 +149,31 @@ def check(con, label, query, expect="zero"):
     return ok
 
 
+def check_sum(con, label, query):
+    """
+    합계 표시용 헬퍼. SELECT 결과(단일 행)의 컬럼들을 로깅.
+
+    사용 예:
+      check_sum(con, "AMT 합계", "SELECT SUM(AMT) AS AMT FROM tfc81")
+      check_sum(con, "보험료 합계",
+                "SELECT SUM(RP_PRM) AS RP_PRM, SUM(AF_PRM) AS AF_PRM FROM fio841")
+    """
+    row = con.execute(query).fetchone()
+    cols = [d[0] for d in con.description]
+    if not row:
+        log.info(f"  [--] {_pad(label, 45)}  데이터 없음")
+        return
+    parts = []
+    for c, v in zip(cols, row):
+        if v is None:
+            parts.append(f"{c}: NULL")
+        elif isinstance(v, (int, float)):
+            parts.append(f"{c}: {v:>14,.0f}")
+        else:
+            parts.append(f"{c}: {v}")
+    log.info(f"  [OK] {_pad(label, 45)}  {' | '.join(parts)}")
+
+
 def check_diff(con, label, query_a, query_b, group_cols, sum_col,
                threshold=1):
     """
