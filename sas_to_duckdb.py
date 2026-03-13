@@ -379,6 +379,7 @@ def _read_one(name, cfg, base_path, yyyymm):
     ts = time.time()
     if cfg.get("type") == "oracle":
         df = _load_oracle(cfg, name, yyyymm)
+        log.info(f"  [읽기] {name:20s} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     else:
         path = _resolve_path(base_path, cfg["file"], yyyymm)
         log.info(f"  [읽기] {name:20s} ← {path.name}")
