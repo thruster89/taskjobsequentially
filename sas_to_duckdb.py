@@ -520,11 +520,38 @@ def _build_export_query(tbl, cfg):
     return sql, sheet
 
 
+def _next_output_path(out_dir, job_name, yyyymm):
+    """출력 파일 경로 결정. 항상 다음 순번으로 생성."""
+    import glob as _glob
+    prefix = f"{job_name}_{yyyymm}"
+
+    # 기존 파일에서 최대 순번 찾기
+    existing = _glob.glob(str(out_dir / f"{prefix}*.xlsx"))
+    max_ver = 0
+    for f in existing:
+        fname = Path(f).stem  # e.g. job1_202602_v3
+        if fname == prefix:
+            max_ver = max(max_ver, 1)
+        elif fname.startswith(prefix + "_v"):
+            try:
+                v = int(fname.split("_v")[-1])
+                max_ver = max(max_ver, v)
+            except ValueError:
+                pass
+
+    if max_ver == 0:
+        # 첫 실행
+        return out_dir / f"{prefix}.xlsx"
+
+    next_ver = max_ver + 1
+    return out_dir / f"{prefix}_v{next_ver}.xlsx"
+
+
 def do_export(con, yyyymm, job_name, sheet_map):
     """시트맵 기반 Excel 출력"""
     out_dir = ROOT / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"{job_name}_{yyyymm}.xlsx"
+    out_file = _next_output_path(out_dir, job_name, yyyymm)
 
     # out_ 접두사 테이블 자동 추가
     db_tables = [r[0] for r in con.execute(
