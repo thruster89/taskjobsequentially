@@ -288,6 +288,21 @@ EXPORT_SHEETS = {
 | SAS 데이터셋 | `sas7bdat` | — | pyreadstat로 읽기 |
 | Oracle DB | `oracle` | `sql`, `dsn` | Oracle에서 SQL로 추출 |
 
+#### Oracle DSN 형식
+
+```python
+# SERVICE_NAME 방식 (슬래시)
+"dsn": "host:1523/SERVICE_NAME"
+
+# SID 방식 (콜론 3개)
+"dsn": "host:1523:SID_NAME"
+
+# 또는 명시적으로 sid / service_name 키 사용
+"dsn": "host:1523",
+"sid": "SID_NAME",             # SID 방식
+# "service_name": "SVC_NAME",  # SERVICE_NAME 방식
+```
+
 ### JOB 파일에서 사용 가능한 유틸
 
 ```python
