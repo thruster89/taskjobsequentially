@@ -274,26 +274,31 @@ def _load_oracle(cfg, name, yyyymm):
 
     fetch_size = cfg.get("fetch_size", 50_000)
 
-    with oracledb.connect(user=user, password=password, dsn=dsn) as conn:
-        cur = conn.cursor()
-        cur.arraysize = fetch_size
-        cur.execute(sql_text)
-        cols = [c[0] for c in cur.description]
+    try:
+        with oracledb.connect(user=user, password=password, dsn=dsn) as conn:
+            cur = conn.cursor()
+            cur.arraysize = fetch_size
+            cur.execute(sql_text)
+            cols = [c[0] for c in cur.description]
 
-        chunks = []
-        while True:
-            rows = cur.fetchmany(fetch_size)
-            if not rows:
-                break
-            chunks.append(rows)
-            log.debug(f"  [Oracle] {name:20s} {sum(len(c) for c in chunks):,}건 읽는 중...")
+            chunks = []
+            while True:
+                rows = cur.fetchmany(fetch_size)
+                if not rows:
+                    break
+                chunks.append(rows)
+                log.debug(f"  [Oracle] {name:20s} {sum(len(c) for c in chunks):,}건 읽는 중...")
 
-        import pandas as pd
-        if chunks:
-            import itertools
-            df = pd.DataFrame(itertools.chain.from_iterable(chunks), columns=cols)
-        else:
-            df = pd.DataFrame(columns=cols)
+            import pandas as pd
+            if chunks:
+                import itertools
+                df = pd.DataFrame(itertools.chain.from_iterable(chunks), columns=cols)
+            else:
+                df = pd.DataFrame(columns=cols)
+    except Exception as e:
+        log.error(f"  [Oracle] {name} 실패: {e}")
+        log.error(f"  [Oracle] SQL:\n{sql_text}")
+        raise
 
     log.info(f"  [Oracle] {name:20s} {len(df):>12,}건")
     return df
@@ -379,6 +384,7 @@ def _read_one(name, cfg, base_path, yyyymm):
     ts = time.time()
     if cfg.get("type") == "oracle":
         df = _load_oracle(cfg, name, yyyymm)
+        log.info(f"  [읽기] {name:20s} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     else:
         path = _resolve_path(base_path, cfg["file"], yyyymm)
         log.info(f"  [읽기] {name:20s} ← {path.name}")
@@ -402,7 +408,7 @@ def do_load(con, yyyymm, tables: dict):
         ttype = cfg["type"]
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
-            log.info(f"  [읽기] {name:20s} ← {path.name}  (DuckDB 네이티브)")
+            log.info(f"  [읽기] {name:20s} ← {path.name}")
             ts = time.time()
 
             if ttype == "fwf":
