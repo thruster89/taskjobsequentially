@@ -177,7 +177,23 @@ TABLES = {                          # 테이블 정의 (필수)
 }
 
 EXPORT_SHEETS = {                   # 시트맵 (선택)
+    # 기본: 테이블 → 시트명
     "my_table": "시트명",
+
+    # SQL 직접 지정
+    "raw_table": {
+        "sheet": "필터된시트",
+        "sql": "SELECT a, b, a+b AS total FROM raw_table WHERE amt > 0",
+    },
+
+    # 컬럼 선택 + 조건 + 정렬 + 건수제한
+    "big_table": {
+        "sheet": "요약",
+        "columns": ["col1", "col2", "col3"],
+        "where": "region = '서울'",
+        "order_by": "col1 DESC",
+        "limit": 1000,
+    },
 }
 
 def logic(con, yyyymm):             # 비즈니스 로직 (필수)
@@ -206,7 +222,7 @@ def validate(con, yyyymm):          # 검증 (필수)
 | 항목 | 타입 | 설명 |
 |------|------|------|
 | `DESC` | `str` | JOB 설명 |
-| `EXPORT_SHEETS` | `dict` | `{테이블명: 시트명}` — 없으면 export 생략 |
+| `EXPORT_SHEETS` | `dict` | `{테이블명: 시트명 or dict}` — 없으면 export 생략. dict 사용 시 `sql`, `columns`, `where`, `order_by`, `limit` 지원 |
 
 ### JOB 파일에서 사용 가능한 유틸
 

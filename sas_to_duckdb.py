@@ -397,6 +397,38 @@ def do_load(con, yyyymm, tables: dict):
     return loaded, failed
 
 
+def _build_export_query(tbl, cfg):
+    """EXPORT_SHEETS 값(str 또는 dict)으로부터 SQL과 시트명을 생성한다.
+
+    지원 형식:
+      문자열  → "시트명"                    → SELECT * FROM tbl
+      dict   → {"sheet": "시트명"}          → SELECT * FROM tbl
+             → {"sheet": .., "sql": "..."}  → 사용자 SQL 그대로
+             → {"sheet": .., "columns": []} → SELECT col1,col2 FROM tbl
+             → {"sheet": .., "where": ".."}→ SELECT * FROM tbl WHERE ..
+             → columns + where 조합도 가능
+    """
+    if isinstance(cfg, str):
+        return f"SELECT * FROM {tbl}", cfg
+
+    sheet = cfg.get("sheet", tbl)
+
+    # sql이 있으면 그대로 사용 (columns/where 무시)
+    if "sql" in cfg:
+        return cfg["sql"], sheet
+
+    cols = ", ".join(cfg["columns"]) if "columns" in cfg else "*"
+    sql = f"SELECT {cols} FROM {tbl}"
+    if "where" in cfg:
+        sql += f" WHERE {cfg['where']}"
+    if "order_by" in cfg:
+        sql += f" ORDER BY {cfg['order_by']}"
+    if "limit" in cfg:
+        sql += f" LIMIT {cfg['limit']}"
+
+    return sql, sheet
+
+
 def do_export(con, yyyymm, job_name, sheet_map):
     """시트맵 기반 Excel 출력"""
     out_dir = ROOT / "output"
@@ -414,17 +446,18 @@ def do_export(con, yyyymm, job_name, sheet_map):
 
     summary = []
     with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
-        for tbl, sheet in sheet_map.items():
+        for tbl, cfg in sheet_map.items():
             try:
                 ts = time.time()
-                df = con.execute(f"SELECT * FROM {tbl}").df()
+                sql, sheet = _build_export_query(tbl, cfg)
+                df = con.execute(sql).df()
                 sname = sheet[:31]
                 df.to_excel(writer, sheet_name=sname, index=False)
                 el = time.time() - ts
                 summary.append((tbl, sname, len(df), el))
                 log.info(f"    {sname:25s}  {len(df):>10,}건  ({el:.1f}초)")
             except Exception as e:
-                log.warning(f"    {sheet} 건너뜀: {e}")
+                log.warning(f"    {sheet if isinstance(cfg, str) else cfg.get('sheet', tbl)} 건너뜀: {e}")
 
         _write_summary_sheet(writer, yyyymm, summary)
 
