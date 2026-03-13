@@ -218,6 +218,44 @@ def _resolve_path(base, file_template, yyyymm):
     raise FileNotFoundError(f"파일 없음: {stem}.* (위치: {base})")
 
 
+def _make_oracle_dsn(cfg):
+    """Oracle DSN 생성. SERVICE_NAME(/) 과 SID(:) 모두 지원.
+
+    dsn 형식:
+      "host:port/service_name"  → SERVICE_NAME 방식
+      "host:port:sid"           → SID 방식 (makedsn 사용)
+      "host:port"  + sid 키     → SID 방식
+      "host:port"  + service_name 키 → SERVICE_NAME 방식
+    """
+    import oracledb
+
+    dsn = cfg.get("dsn", "")
+
+    # 명시적 sid / service_name 키가 있으면 우선
+    if "sid" in cfg:
+        host_port = dsn.split("/")[0]  # host:port 부분만
+        parts = host_port.split(":")
+        return oracledb.makedsn(parts[0], parts[1] if len(parts) > 1 else "1521",
+                                sid=cfg["sid"])
+    if "service_name" in cfg:
+        host_port = dsn.split("/")[0]
+        parts = host_port.split(":")
+        return oracledb.makedsn(parts[0], parts[1] if len(parts) > 1 else "1521",
+                                service_name=cfg["service_name"])
+
+    # dsn 문자열에서 자동 판별
+    # host:port/service → SERVICE_NAME
+    if "/" in dsn:
+        return dsn
+
+    # host:port:sid → SID
+    parts = dsn.split(":")
+    if len(parts) == 3:
+        return oracledb.makedsn(parts[0], parts[1], sid=parts[2])
+
+    return dsn
+
+
 def _load_oracle(cfg, name, yyyymm):
     """Oracle DB에서 SQL로 데이터 추출 → DataFrame"""
     try:
@@ -226,7 +264,7 @@ def _load_oracle(cfg, name, yyyymm):
         raise ImportError(
             "oracledb 패키지가 필요합니다: pip install oracledb")
 
-    dsn = cfg["dsn"]
+    dsn = _make_oracle_dsn(cfg)
     user = cfg.get("user", "")
     password = cfg.get("password", "")
     sql_text = cfg["sql"].replace("{YYYYMM}", yyyymm)
