@@ -521,27 +521,40 @@ def _build_export_query(tbl, cfg):
 
 
 def _next_output_path(out_dir, job_name, yyyymm):
-    """출력 파일 경로 결정. 항상 다음 순번으로 생성 (v0.01, v0.02, ... v0.99, v1.00, ...)."""
+    """출력 파일 경로 결정. 항상 다음 마이너 순번으로 생성.
+
+    v0.01 → v0.02 → ... → v0.99 → v0.100 → ...
+    유저가 v1.0 또는 v1.00을 만들면 → v1.01 → v1.02 → ...
+    메이저 번호는 유저가 직접 올린다.
+    """
     import glob as _glob
     import re
     prefix = f"{job_name}_{yyyymm}"
 
-    # 기존 파일에서 최대 순번 찾기 (총 순번을 정수로 환산: v0.01=1, v1.00=100)
-    existing = _glob.glob(str(out_dir / f"{prefix}*.xlsx"))
-    max_seq = 0
+    # 기존 파일에서 메이저별 최대 마이너 찾기
+    # v1.0, v1.00 둘 다 마이너=0 으로 인식
+    existing = _glob.glob(str(out_dir / f"{prefix}_v*.xlsx"))
+    max_major = 0
+    max_minor = 0  # 해당 메이저의 최대 마이너
     for f in existing:
-        fname = Path(f).stem  # e.g. job1_202602_v0.03 or job1_202602_v1.05
-        m = re.search(r"_v(\d+)\.(\d{2})$", fname)
-        if m:
-            seq = int(m.group(1)) * 99 + int(m.group(2))
-            max_seq = max(max_seq, seq)
+        fname = Path(f).stem
+        # v1.04, v1.0, v1.00 → major.minor / v1, v2 → major only (minor=0)
+        m = re.search(r"_v(\d+)(?:\.(\d+))?$", fname)
+        if not m:
+            continue
+        major = int(m.group(1))
+        minor = int(m.group(2)) if m.group(2) is not None else 0
+        if major > max_major:
+            max_major = major
+            max_minor = minor
+        elif major == max_major:
+            max_minor = max(max_minor, minor)
 
-    next_seq = max_seq + 1
-    major, minor = divmod(next_seq, 99)
-    if minor == 0:
-        major -= 1
-        minor = 99
-    return out_dir / f"{prefix}_v{major}.{minor:02d}.xlsx"
+    if not existing:
+        return out_dir / f"{prefix}_v0.01.xlsx"
+
+    next_minor = max_minor + 1
+    return out_dir / f"{prefix}_v{max_major}.{next_minor:02d}.xlsx"
 
 
 def do_export(con, yyyymm, job_name, sheet_map):
