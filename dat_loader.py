@@ -28,6 +28,8 @@ except ImportError:
 
 # 인코딩 fallback 순서
 ENCODINGS = ["cp949", "utf-8"]
+# DuckDB 네이티브 읽기용 인코딩 순서 (cp949 ⊃ euc-kr 이므로 euc-kr 불필요)
+DUCKDB_ENCODINGS = ["utf-8", "cp949"]
 
 # sas_to_duckdb.py 와 함께 쓸 때는 그쪽 logger 를 그대로 사용
 # 단독 실행 시에는 기본 logger 사용
@@ -154,7 +156,8 @@ def read_fwf_dat(
     return df
 
 
-def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None):
+def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
+                    encodings: list = None):
     """
     DuckDB 네이티브 FWF 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -162,15 +165,16 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None):
     path      : 파일 경로 (.DAT / .gz — .zip은 미지원, 폴백 필요)
     col_defs  : [(시작, 끝), "컬럼명"] 리스트
     numeric   : 숫자형 캐스팅 컬럼명 리스트
+    encodings : 시도할 인코딩 목록 (기본값: DUCKDB_ENCODINGS)
 
     Returns: 건수 (int)
     """
     numeric_set = set(numeric or [])
+    enc_list = encodings or DUCKDB_ENCODINGS
 
     # 파일을 줄 단위 단일 컬럼으로 읽기
     # delim='\x01' (SOH): 데이터에 없는 구분자 → 줄 전체가 column0
-    # encoding: utf-8 먼저 시도, 실패 시 euc-kr 계열 순서로 폴백
-    for enc in ["utf-8", "euc-kr", "windows-949", "ms949"]:
+    for enc in enc_list:
         try:
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _fwf_raw AS
@@ -251,7 +255,7 @@ def read_pipe_dat(
 
 
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
-                     delimiter: str = "|"):
+                     delimiter: str = "|", encodings: list = None):
     """
     DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -260,14 +264,16 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     col_names : 컬럼명 순서 리스트
     numeric   : 숫자형 캐스팅 컬럼명 리스트
     delimiter : 구분자 (기본값: "|")
+    encodings : 시도할 인코딩 목록 (기본값: DUCKDB_ENCODINGS)
 
     Returns: 건수 (int)
     """
     numeric_set = set(numeric or [])
+    enc_list = encodings or DUCKDB_ENCODINGS
 
     # FWF와 동일: 줄 단위 단일 컬럼으로 읽고 string_split으로 분리
     # → trailing delimiter, 컬럼 수 불일치 문제 없음
-    for enc in ["utf-8", "euc-kr", "windows-949", "ms949"]:
+    for enc in enc_list:
         try:
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _pipe_raw AS

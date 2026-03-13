@@ -17,6 +17,7 @@ import logging
 import time
 import argparse
 import unicodedata
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import importlib.util
 from pathlib import Path
@@ -83,6 +84,7 @@ except ImportError:
 # ══════════════════════════════════════════════
 ROOT = Path(__file__).parent
 MAX_READ_WORKERS = 4
+LOAD_TIMEOUT = 300          # 테이블당 최대 읽기 시간 (초), 0이면 무제한
 ENCODINGS = ["cp949", "utf-8"]
 FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
 
@@ -404,10 +406,14 @@ def _read_one(name, cfg, base_path, yyyymm):
     return name, cfg, df
 
 
-def do_load(con, yyyymm, tables: dict):
-    """TABLES dict 기반 로드 (FWF → DuckDB 네이티브, 나머지 → 병렬 읽기+순차 적재)"""
+def do_load(con, yyyymm, tables: dict, timeout: int = None):
+    """TABLES dict 기반 로드 (FWF → DuckDB 네이티브, 나머지 → 병렬 읽기+순차 적재)
+
+    timeout: 테이블당 최대 읽기 시간(초). None이면 LOAD_TIMEOUT 사용, 0이면 무제한.
+    """
     base_path = ROOT / "data" / yyyymm
     loaded, failed = [], []
+    tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
     # DuckDB 네이티브 대상 (fwf, pipe) / 나머지 (sas7bdat, oracle 등) 분리
     native_types = {"fwf", "pipe"}
@@ -417,19 +423,34 @@ def do_load(con, yyyymm, tables: dict):
     # ── FWF / Pipe: DuckDB 네이티브 읽기 (pandas 우회) ──
     for name, cfg in native_tables.items():
         ttype = cfg["type"]
+        timer = None
+        ts = time.time()
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
             log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
-            ts = time.time()
+
+            # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
+            if tmo > 0:
+                timer = threading.Timer(tmo, lambda: con.interrupt())
+                timer.start()
+
+            # 테이블 정의에 encoding 있으면 우선 사용
+            enc_override = cfg.get("encoding")
+            encs = [enc_override] if enc_override else None
 
             if ttype == "fwf":
-                cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"))
+                cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"),
+                                      encodings=encs)
                 tmp_table = "_fwf_parsed"
             else:  # pipe
                 cnt = read_pipe_duckdb(con, path, cfg["cols"],
                                        cfg.get("numeric"),
-                                       cfg.get("delimiter", "|"))
+                                       cfg.get("delimiter", "|"),
+                                       encodings=encs)
                 tmp_table = "_pipe_parsed"
+
+            if timer:
+                timer.cancel()
 
             # tmp → 실제 테이블로 upsert
             month_col = cfg.get("month_col")
@@ -445,21 +466,43 @@ def do_load(con, yyyymm, tables: dict):
             log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             loaded.append(name)
         except Exception as e:
+            if timer:
+                timer.cancel()
+            elapsed = time.time() - ts
+            # 타임아웃 여부 판별
+            if tmo > 0 and elapsed >= tmo - 1:
+                log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({tmo}초 초과) — 건너뜀")
+                failed.append(name)
+                continue
             log.warning(f"  [읽기] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
             try:
-                ts = time.time()
-                if ttype == "fwf":
-                    df = read_fwf_dat(path, cfg["cols"],
-                                      numeric=cfg.get("numeric"),
-                                      encodings=ENCODINGS)
+                ts_fb = time.time()
+                # pandas 폴백에도 타임아웃 적용
+                pd_encs = [enc_override] if enc_override else ENCODINGS
+                def _pandas_fallback():
+                    if ttype == "fwf":
+                        return read_fwf_dat(path, cfg["cols"],
+                                            numeric=cfg.get("numeric"),
+                                            encodings=pd_encs)
+                    else:
+                        return read_pipe_dat(path, cfg["cols"],
+                                             numeric=cfg.get("numeric"),
+                                             encodings=pd_encs,
+                                             delimiter=cfg.get("delimiter", "|"))
+
+                if tmo > 0:
+                    with ThreadPoolExecutor(max_workers=1) as fb_pool:
+                        fb_fut = fb_pool.submit(_pandas_fallback)
+                        df = fb_fut.result(timeout=tmo)
                 else:
-                    df = read_pipe_dat(path, cfg["cols"],
-                                       numeric=cfg.get("numeric"),
-                                       encodings=ENCODINGS,
-                                       delimiter=cfg.get("delimiter", "|"))
+                    df = _pandas_fallback()
+
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)  (폴백)")
+                log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
                 loaded.append(name)
+            except TimeoutError:
+                log.error(f"  [읽기] {_pad(name, 20)} 폴백 타임아웃 ({tmo}초 초과) — 건너뜀")
+                failed.append(name)
             except Exception as e2:
                 log.error(f"  [읽기] {_pad(name, 20)} 폴백도 실패: {e2}")
                 failed.append(name)
@@ -477,7 +520,11 @@ def do_load(con, yyyymm, tables: dict):
             for fut in as_completed(futures):
                 name = futures[fut]
                 try:
-                    results.append(fut.result())
+                    result_timeout = tmo if tmo > 0 else None
+                    results.append(fut.result(timeout=result_timeout))
+                except TimeoutError:
+                    log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({tmo}초 초과) — 건너뜀")
+                    failed.append(name)
                 except FileNotFoundError:
                     log.warning(f"  [읽기] {_pad(name, 20)} 파일 없음 — 건너뜀")
                     failed.append(name)
@@ -669,7 +716,7 @@ def _write_summary_sheet(writer, yyyymm, summary):
 
 
 def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
-            only_tables=None):
+            only_tables=None, load_timeout=None):
     """단일 JOB 실행: load → logic → validate → export"""
     name = job_mod.NAME
     desc = getattr(job_mod, "DESC", "")
@@ -697,8 +744,9 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
             tables = {k: v for k, v in tables.items() if k in only_tables}
             if not tables:
                 log.warning(f"[{name}] 로드할 테이블이 없습니다")
-        log.info(f"[{name}] LOAD ({len(tables)}개 테이블)")
-        loaded, failed = do_load(con, yyyymm, tables)
+        tmo_label = f", 타임아웃={load_timeout}초" if load_timeout else ""
+        log.info(f"[{name}] LOAD ({len(tables)}개 테이블{tmo_label})")
+        loaded, failed = do_load(con, yyyymm, tables, timeout=load_timeout)
         if failed:
             log.warning(f"[{name}] 로드 실패: {failed}")
 
@@ -753,6 +801,8 @@ def main():
                         help="실행할 단계만 지정 (예: --stage load)")
     parser.add_argument("--tables", "-t", nargs="+",
                         help="로드할 테이블명만 지정 (예: --tables fio841 fio842)")
+    parser.add_argument("--load-timeout", type=int, default=None,
+                        help=f"테이블당 최대 읽기 시간(초) (기본: {LOAD_TIMEOUT}, 0=무제한)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="DEBUG 로그 콘솔 출력")
 
@@ -788,7 +838,8 @@ def main():
         t_total = time.time()
         for mod in job_mods:
             run_job(con, mod, yyyymm, skip_load=args.skip_load,
-                    stages=args.stage, only_tables=args.tables)
+                    stages=args.stage, only_tables=args.tables,
+                    load_timeout=args.load_timeout)
         log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
     finally:
         con.close()
