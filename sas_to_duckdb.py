@@ -521,31 +521,30 @@ def _build_export_query(tbl, cfg):
 
 
 def _next_output_path(out_dir, job_name, yyyymm):
-    """출력 파일 경로 결정. 기존 파일이 잠겨있으면 순번 부여."""
-    base = out_dir / f"{job_name}_{yyyymm}.xlsx"
-    if not base.exists():
-        return base
-    # 기존 파일이 쓰기 가능한지 확인
-    try:
-        with open(base, "a"):
-            pass
-        return base
-    except (PermissionError, OSError):
-        pass
-    # 잠겨있으면 순번 부여 (v2, v3, ...)
-    for i in range(2, 100):
-        candidate = out_dir / f"{job_name}_{yyyymm}_v{i}.xlsx"
-        if not candidate.exists():
-            log.warning(f"  기존 파일 잠김 → {candidate.name}")
-            return candidate
-        try:
-            with open(candidate, "a"):
+    """출력 파일 경로 결정. 항상 다음 순번으로 생성."""
+    import glob as _glob
+    prefix = f"{job_name}_{yyyymm}"
+
+    # 기존 파일에서 최대 순번 찾기
+    existing = _glob.glob(str(out_dir / f"{prefix}*.xlsx"))
+    max_ver = 0
+    for f in existing:
+        fname = Path(f).stem  # e.g. job1_202602_v3
+        if fname == prefix:
+            max_ver = max(max_ver, 1)
+        elif fname.startswith(prefix + "_v"):
+            try:
+                v = int(fname.split("_v")[-1])
+                max_ver = max(max_ver, v)
+            except ValueError:
                 pass
-            log.warning(f"  기존 파일 잠김 → {candidate.name}")
-            return candidate
-        except (PermissionError, OSError):
-            continue
-    raise OSError(f"출력 파일 생성 불가: {base} (v2~v99 모두 잠김)")
+
+    if max_ver == 0:
+        # 첫 실행
+        return out_dir / f"{prefix}.xlsx"
+
+    next_ver = max_ver + 1
+    return out_dir / f"{prefix}_v{next_ver}.xlsx"
 
 
 def do_export(con, yyyymm, job_name, sheet_map):
