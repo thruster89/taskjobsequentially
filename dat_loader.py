@@ -375,6 +375,111 @@ def read_sas7bdat_file(
 
 
 # ══════════════════════════════════════════════
+# 유형D : CSV 읽기
+# ══════════════════════════════════════════════
+
+def read_csv_file(
+    path      : Path,
+    col_names : list = None,
+    numeric   : list = None,
+    encodings : list = None,
+    delimiter : str  = ",",
+    header    : bool = False,
+) -> pd.DataFrame:
+    """
+    CSV 파일 읽기 (pandas)
+
+    Args:
+        path      : 파일 경로
+        col_names : 컬럼명 리스트 (None이면 header=True 필요)
+        numeric   : 숫자형 캐스팅 컬럼명 리스트
+        encodings : 인코딩 fallback 순서
+        delimiter : 구분자 (기본값: ",")
+        header    : 첫 행을 헤더로 사용할지 여부
+
+    Returns:
+        DataFrame (모든 컬럼 str, numeric 지정 컬럼은 float)
+    """
+    kw = dict(sep=delimiter, dtype=str, on_bad_lines="warn")
+    if col_names:
+        kw["names"] = col_names
+        kw["header"] = 0 if header else None  # header=True면 첫행 스킵
+    else:
+        kw["header"] = 0 if header else None
+
+    df, _ = try_read(pd.read_csv, path, encodings=encodings, **kw)
+    df = df.fillna("")
+    df = _strip_str(df, exclude=numeric or [])
+    df = _cast_numeric(df, numeric or [])
+    return df
+
+
+def read_csv_duckdb(
+    con, path: Path, col_names: list = None, numeric: list = None,
+    delimiter: str = ",", header: bool = False, encodings: list = None,
+):
+    """
+    DuckDB 네이티브 CSV 읽기 — read_csv 직접 사용
+
+    Returns: 건수 (int)
+    """
+    numeric_set = set(numeric or [])
+    enc_list = encodings or DUCKDB_ENCODINGS
+    hdr = "true" if header else "false"
+
+    for enc in enc_list:
+        try:
+            # 컬럼명이 명시되어 있으면 columns 매핑 사용
+            if col_names:
+                col_map = ", ".join(
+                    f"'{c}': 'DOUBLE'" if c in numeric_set else f"'{c}': 'VARCHAR'"
+                    for c in col_names
+                )
+                con.execute(f"""
+                    CREATE OR REPLACE TEMP TABLE _csv_parsed AS
+                    SELECT * FROM read_csv('{path}',
+                        delim    = '{delimiter}',
+                        header   = {hdr},
+                        encoding = '{enc}',
+                        columns  = {{{col_map}}})
+                """)
+            else:
+                # 헤더에서 컬럼명 자동 추출 (header=True 전제)
+                con.execute(f"""
+                    CREATE OR REPLACE TEMP TABLE _csv_parsed AS
+                    SELECT * FROM read_csv('{path}',
+                        delim    = '{delimiter}',
+                        header   = true,
+                        encoding = '{enc}',
+                        all_varchar = true)
+                """)
+                # numeric 캐스팅
+                if numeric_set:
+                    cols_info = con.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name='_csv_parsed' ORDER BY ordinal_position"
+                    ).fetchall()
+                    exprs = []
+                    for (c,) in cols_info:
+                        if c in numeric_set:
+                            exprs.append(f"TRY_CAST({c} AS DOUBLE) AS {c}")
+                        else:
+                            exprs.append(c)
+                    con.execute(f"""
+                        CREATE OR REPLACE TEMP TABLE _csv_parsed AS
+                        SELECT {', '.join(exprs)} FROM _csv_parsed
+                    """)
+            break
+        except Exception:
+            continue
+    else:
+        raise RuntimeError(f"DuckDB read_csv 인코딩 실패: {path}")
+
+    cnt = con.execute("SELECT COUNT(*) FROM _csv_parsed").fetchone()[0]
+    return cnt
+
+
+# ══════════════════════════════════════════════
 # 공통 유틸
 # ══════════════════════════════════════════════
 

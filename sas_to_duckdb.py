@@ -74,7 +74,8 @@ except ImportError:
     log.critical("pip install pandas"); sys.exit(1)
 
 try:
-    from dat_loader import read_fwf_dat, read_fwf_duckdb, read_pipe_dat, read_pipe_duckdb, read_sas7bdat_file
+    from dat_loader import (read_fwf_dat, read_fwf_duckdb, read_pipe_dat, read_pipe_duckdb,
+                             read_csv_file, read_csv_duckdb, read_sas7bdat_file)
 except ImportError:
     log.critical("dat_loader.py 없음"); sys.exit(1)
 
@@ -146,6 +147,31 @@ def check(con, label, query, expect="zero"):
     mark = "OK" if ok else "NG"
     log.info(f"  [{mark}] {_pad(label, 45)}  {cnt:>12,}건")
     return ok
+
+
+def check_sum(con, label, query):
+    """
+    합계 표시용 헬퍼. SELECT 결과(단일 행)의 컬럼들을 로깅.
+
+    사용 예:
+      check_sum(con, "AMT 합계", "SELECT SUM(AMT) AS AMT FROM tfc81")
+      check_sum(con, "보험료 합계",
+                "SELECT SUM(RP_PRM) AS RP_PRM, SUM(AF_PRM) AS AF_PRM FROM fio841")
+    """
+    row = con.execute(query).fetchone()
+    cols = [d[0] for d in con.description]
+    if not row:
+        log.info(f"  [--] {_pad(label, 45)}  데이터 없음")
+        return
+    parts = []
+    for c, v in zip(cols, row):
+        if v is None:
+            parts.append(f"{c}: NULL")
+        elif isinstance(v, (int, float)):
+            parts.append(f"{c}: {v:>14,.0f}")
+        else:
+            parts.append(f"{c}: {v}")
+    log.info(f"  [OK] {_pad(label, 45)}  {' | '.join(parts)}")
 
 
 def check_diff(con, label, query_a, query_b, group_cols, sum_col,
@@ -326,6 +352,11 @@ def _load_file(path, cfg, name):
     elif cfg["type"] == "pipe":
         return read_pipe_dat(path, cfg["cols"], numeric=numeric,
                              encodings=ENCODINGS, delimiter=cfg.get("delimiter", "|"))
+    elif cfg["type"] == "csv":
+        return read_csv_file(path, cfg.get("cols"), numeric=numeric,
+                             encodings=ENCODINGS,
+                             delimiter=cfg.get("delimiter", ","),
+                             header=cfg.get("header", False))
     elif cfg["type"] == "sas7bdat":
         return read_sas7bdat_file(path, numeric=numeric,
                                   encoding=cfg.get("encoding", "cp949"))
@@ -416,10 +447,10 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
     loaded, failed = [], []
     tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
-    # DuckDB 네이티브 대상 (pipe만) / 나머지 (fwf, sas7bdat, oracle 등) 분리
+    # DuckDB 네이티브 대상 (pipe, csv) / 나머지 (fwf, sas7bdat, oracle 등) 분리
     # fwf 는 SAS colspec 이 바이트 위치이므로 SUBSTR(글자 기반) 대신
     # 바이트 슬라이싱 pandas 경로를 사용해야 cp949 한글 위치가 밀리지 않음
-    native_types = {"pipe"}
+    native_types = {"pipe", "csv"}
     def _is_native(cfg):
         return cfg.get("type") in native_types
     native_tables = {k: v for k, v in tables.items() if _is_native(v)}
@@ -447,6 +478,13 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"),
                                       encodings=encs)
                 tmp_table = "_fwf_parsed"
+            elif ttype == "csv":
+                cnt = read_csv_duckdb(con, path, cfg.get("cols"),
+                                      cfg.get("numeric"),
+                                      cfg.get("delimiter", ","),
+                                      cfg.get("header", False),
+                                      encodings=encs)
+                tmp_table = "_csv_parsed"
             else:  # pipe
                 cnt = read_pipe_duckdb(con, path, cfg["cols"],
                                        cfg.get("numeric"),
@@ -703,7 +741,7 @@ def _write_summary_sheet(writer, yyyymm, summary):
         ws.cell(row=row, column=1, value=i).alignment = center
         ws.cell(row=row, column=2, value=tbl).alignment = left
         c_s = ws.cell(row=row, column=3, value=sname)
-        c_s.hyperlink, c_s.font, c_s.alignment = f"#{sname}!A1", link_font, left
+        c_s.hyperlink, c_s.font, c_s.alignment = f"#'{sname}'!A1", link_font, left
         c_c = ws.cell(row=row, column=4, value=cnt)
         c_c.number_format, c_c.alignment = "#,##0", right
         ws.cell(row=row, column=5, value=round(el, 1)).alignment = center

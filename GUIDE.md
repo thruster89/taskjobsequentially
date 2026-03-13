@@ -110,6 +110,25 @@ python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -v
 | `--job FILE [...]` | `-j` | JOB 파일 경로 (필수) | |
 | `--skip-load` | | LOAD 단계 생략 | OFF |
 | `--verbose` | `-v` | DEBUG 로그 콘솔 출력 | OFF |
+| `--stage STAGE [...]` | `-s` | 특정 단계만 실행 (load/logic/validate/export) | 전체 |
+| `--tables TBL [...]` | `-t` | 로드할 테이블만 지정 | 전체 |
+| `--load-timeout SEC` | | 테이블당 최대 읽기 시간(초), 0=무제한 | 300 |
+
+### 단계별 실행 예시
+
+```bash
+# load만 실행
+python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
+
+# logic + validate만 재실행 (이미 로드된 데이터 사용)
+python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s logic validate
+
+# 특정 테이블만 로드
+python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s load -t fio841
+
+# export만 재실행
+python sas_to_duckdb.py --ym 202601 --job jobs/job2.py -s export
+```
 
 ---
 
@@ -264,6 +283,21 @@ EXPORT_SHEETS = {
         "order_by": "amt DESC",
         "limit": 1000,
     },
+
+    # ⑤ 두 테이블 JOIN (sql 키 사용 시 dict key는 자유)
+    "join_result": {
+        "sheet": "보험료_조인",
+        "sql": """
+            SELECT a.*, b.CUST_NM
+            FROM tfc81 a JOIN fio841 b ON a.POL_NO = b.POL_NO
+        """,
+    },
+
+    # ⑥ UNION ALL
+    "union_result": {
+        "sheet": "전체합산",
+        "sql": "SELECT * FROM tfc81 UNION ALL SELECT * FROM tfc82",
+    },
 }
 ```
 
@@ -277,6 +311,7 @@ EXPORT_SHEETS = {
 | `limit` | X | 최대 건수 |
 
 > `sql`을 지정하면 `columns`, `where`, `order_by`, `limit`는 무시됩니다.
+> `sql` 키를 사용할 때 dict key는 실제 테이블명이 아니어도 됩니다 (JOIN, UNION 등에 활용).
 > `out_` 접두사 테이블은 여전히 자동 추가됩니다.
 
 ### TABLES 타입별 설정
@@ -306,15 +341,62 @@ EXPORT_SHEETS = {
 ### JOB 파일에서 사용 가능한 유틸
 
 ```python
-from sas_to_duckdb import sql, table_exists
-
-# SQL 실행 + 건수 로깅
-sql(con, "라벨", "CREATE OR REPLACE TABLE ...")
-
-# 테이블 존재 여부 확인
-if table_exists(con, "some_table"):
-    ...
+from sas_to_duckdb import sql, table_exists, check, check_sum, check_diff, row_count
 ```
+
+| 함수 | 용도 | 사용 단계 |
+|------|------|-----------|
+| `sql(con, label, query)` | SQL 실행 + CREATE TABLE이면 건수 로깅 | logic |
+| `table_exists(con, name)` | 테이블 존재 여부 확인 | logic / validate |
+| `row_count(con, table)` | 테이블 건수 로깅 | validate |
+| `check(con, label, query, expect)` | 건수 검증 (0건/N건/1건 이상) | validate |
+| `check_sum(con, label, query)` | 합계값 표시 (여러 컬럼 지원) | validate |
+| `check_diff(con, label, qA, qB, group_cols, sum_col)` | 두 쿼리 결과 차이 비교 | validate |
+
+#### 사용 예시
+
+```python
+def logic(con, yyyymm):
+    sql(con, "결과 테이블", """
+        CREATE OR REPLACE TABLE result AS
+        SELECT ... FROM my_table
+    """)
+
+def validate(con, yyyymm):
+    # 건수 확인
+    row_count(con, "result")
+
+    # 이상 데이터 0건이어야 정상
+    check(con, "중복 체크", "SELECT COUNT(*) FROM result GROUP BY key HAVING COUNT(*) > 1")
+
+    # 1건 이상 존재해야 정상
+    check(con, "데이터 존재", "SELECT COUNT(*) FROM result", expect="nonzero")
+
+    # 합계값 표시
+    check_sum(con, "AMT 합계", "SELECT SUM(AMT) AS AMT FROM result")
+    check_sum(con, "보험료 합계",
+              "SELECT SUM(RP_PRM) AS RP_PRM, SUM(AF_PRM) AS AF_PRM FROM fio841")
+
+    # 두 테이블 차이 비교 (group_cols 기준 FULL OUTER JOIN)
+    check_diff(con, "전표 vs 배분",
+               "SELECT DVCD, SUM(AMT) AS AMT FROM slp GROUP BY DVCD",
+               "SELECT DVCD, SUM(AMT) AS AMT FROM sa  GROUP BY DVCD",
+               group_cols=["DVCD"], sum_col="AMT")
+```
+
+#### check 함수 expect 옵션
+
+| expect | 의미 | OK 조건 |
+|--------|------|---------|
+| `"zero"` (기본) | 이상 데이터 없어야 함 | 0건 |
+| `"nonzero"` | 데이터 존재해야 함 | 1건 이상 |
+| `int` (예: `100`) | 정확히 N건이어야 함 | N건 |
+
+#### check_diff 동작
+
+- 두 쿼리를 `group_cols` 기준 FULL OUTER JOIN
+- `sum_col` 차이가 `threshold`(기본 1) 초과인 행을 출력
+- 차이 있으면 `output/diff_라벨.csv`에 자동 저장
 
 ---
 
@@ -370,9 +452,24 @@ output/
 └── job3_202601.xlsx
 ```
 
-- 첫 번째 시트: **요약** (테이블명·시트명·건수·소요시간)
+- 첫 번째 시트: **요약** (테이블명·시트명·건수·소요시간, 시트 하이퍼링크 포함)
 - `out_` 접두사 테이블은 자동으로 시트에 포함
 - 시트명은 31자에서 자동 잘림 (openpyxl 제한)
+- 정수/실수 컬럼에 `#,##0` 서식 자동 적용 (E+ 지수 표기 방지)
+
+### 버전 관리
+
+실행할 때마다 마이너 버전이 자동 증가합니다.
+
+```
+job1_202601_v0.01.xlsx   ← 첫 실행
+job1_202601_v0.02.xlsx   ← 재실행
+job1_202601_v0.03.xlsx   ← 재실행
+job1_202601_v1.00.xlsx   ← 유저가 직접 v1.0으로 올림
+job1_202601_v1.01.xlsx   ← 이후 재실행
+```
+
+메이저 번호는 유저가 파일명을 수동으로 변경하여 올립니다.
 
 ---
 
