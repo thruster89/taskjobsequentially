@@ -520,11 +520,39 @@ def _build_export_query(tbl, cfg):
     return sql, sheet
 
 
+def _next_output_path(out_dir, job_name, yyyymm):
+    """출력 파일 경로 결정. 기존 파일이 잠겨있으면 순번 부여."""
+    base = out_dir / f"{job_name}_{yyyymm}.xlsx"
+    if not base.exists():
+        return base
+    # 기존 파일이 쓰기 가능한지 확인
+    try:
+        with open(base, "a"):
+            pass
+        return base
+    except (PermissionError, OSError):
+        pass
+    # 잠겨있으면 순번 부여 (v2, v3, ...)
+    for i in range(2, 100):
+        candidate = out_dir / f"{job_name}_{yyyymm}_v{i}.xlsx"
+        if not candidate.exists():
+            log.warning(f"  기존 파일 잠김 → {candidate.name}")
+            return candidate
+        try:
+            with open(candidate, "a"):
+                pass
+            log.warning(f"  기존 파일 잠김 → {candidate.name}")
+            return candidate
+        except (PermissionError, OSError):
+            continue
+    raise OSError(f"출력 파일 생성 불가: {base} (v2~v99 모두 잠김)")
+
+
 def do_export(con, yyyymm, job_name, sheet_map):
     """시트맵 기반 Excel 출력"""
     out_dir = ROOT / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"{job_name}_{yyyymm}.xlsx"
+    out_file = _next_output_path(out_dir, job_name, yyyymm)
 
     # out_ 접두사 테이블 자동 추가
     db_tables = [r[0] for r in con.execute(
