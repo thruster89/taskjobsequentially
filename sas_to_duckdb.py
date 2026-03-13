@@ -98,6 +98,11 @@ def _dw(s):
     return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in s)
 
 
+def _pad(s, width):
+    """한글 폭 고려 오른쪽 패딩 (ljust 대체)"""
+    return s + ' ' * max(0, width - _dw(s))
+
+
 def sql(con, label, query, params=None):
     """SQL 실행 + CREATE TABLE이면 건수 로깅"""
     t = time.time()
@@ -177,9 +182,15 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
         for r in show:
             keys = ", ".join(f"{c}={r[i]}" for i, c in enumerate(group_cols))
             val_a, val_b, diff = r[len(group_cols)], r[len(group_cols)+1], r[len(group_cols)+2]
-            log.info(f"       {keys:30s}  A: {val_a:>14,.0f}  B: {val_b:>14,.0f}  diff: {diff:>14,.0f}")
+            log.info(f"       {_pad(keys, 30)}  A: {val_a:>14,.0f}  B: {val_b:>14,.0f}  diff: {diff:>14,.0f}")
         if total > 20:
             log.info(f"       ... 외 {total - 20:,}건")
+        # 합계
+        gc = len(group_cols)
+        sum_a = sum(r[gc] for r in rows)
+        sum_b = sum(r[gc + 1] for r in rows)
+        sum_d = sum(r[gc + 2] for r in rows)
+        log.info(f"       {_pad('[합계]', 30)}  A: {sum_a:>14,.0f}  B: {sum_b:>14,.0f}  diff: {sum_d:>14,.0f}")
 
         # CSV 저장
         import csv
@@ -199,7 +210,7 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
 def row_count(con, table):
     """테이블 건수 로깅"""
     if not table_exists(con, table):
-        log.warning(f"  [--] {table:45s}  테이블 없음")
+        log.warning(f"  [--] {_pad(table, 45)}  테이블 없음")
         return 0
     cnt = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     log.info(f"  [OK] {table + ' ' * max(0, 45 - _dw(table))}  {cnt:>12,}건")
@@ -269,7 +280,7 @@ def _load_oracle(cfg, name, yyyymm):
     password = cfg.get("password", "")
     sql_text = cfg["sql"].replace("{YYYYMM}", yyyymm)
 
-    log.info(f"  [Oracle] {name:20s} ← {dsn}")
+    log.info(f"  [Oracle] {_pad(name, 20)} ← {dsn}")
     log.debug(f"  [Oracle] SQL: {sql_text[:120]}...")
 
     fetch_size = cfg.get("fetch_size", 50_000)
@@ -287,7 +298,7 @@ def _load_oracle(cfg, name, yyyymm):
                 if not rows:
                     break
                 chunks.append(rows)
-                log.debug(f"  [Oracle] {name:20s} {sum(len(c) for c in chunks):,}건 읽는 중...")
+                log.debug(f"  [Oracle] {_pad(name, 20)} {sum(len(c) for c in chunks):,}건 읽는 중...")
 
             import pandas as pd
             if chunks:
@@ -300,7 +311,7 @@ def _load_oracle(cfg, name, yyyymm):
         log.error(f"  [Oracle] SQL:\n{sql_text}")
         raise
 
-    log.info(f"  [Oracle] {name:20s} {len(df):>12,}건")
+    log.info(f"  [Oracle] {_pad(name, 20)} {len(df):>12,}건")
     return df
 
 
@@ -384,12 +395,12 @@ def _read_one(name, cfg, base_path, yyyymm):
     ts = time.time()
     if cfg.get("type") == "oracle":
         df = _load_oracle(cfg, name, yyyymm)
-        log.info(f"  [읽기] {name:20s} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [읽기] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     else:
         path = _resolve_path(base_path, cfg["file"], yyyymm)
-        log.info(f"  [읽기] {name:20s} ← {path.name}")
+        log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
         df = _load_file(path, cfg, name)
-        log.info(f"  [읽기] {name:20s} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [읽기] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     return name, cfg, df
 
 
@@ -408,7 +419,7 @@ def do_load(con, yyyymm, tables: dict):
         ttype = cfg["type"]
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
-            log.info(f"  [읽기] {name:20s} ← {path.name}")
+            log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
             ts = time.time()
 
             if ttype == "fwf":
@@ -431,10 +442,10 @@ def do_load(con, yyyymm, tables: dict):
                     con.execute(f"DELETE FROM {name}")
                 con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
             con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
-            log.info(f"  [읽기] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+            log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             loaded.append(name)
         except Exception as e:
-            log.warning(f"  [읽기] {name:20s} DuckDB 실패({e}) → pandas 폴백")
+            log.warning(f"  [읽기] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
             try:
                 ts = time.time()
                 if ttype == "fwf":
@@ -447,10 +458,10 @@ def do_load(con, yyyymm, tables: dict):
                                        encodings=ENCODINGS,
                                        delimiter=cfg.get("delimiter", "|"))
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                log.info(f"  [읽기] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)  (폴백)")
+                log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)  (폴백)")
                 loaded.append(name)
             except Exception as e2:
-                log.error(f"  [읽기] {name:20s} 폴백도 실패: {e2}")
+                log.error(f"  [읽기] {_pad(name, 20)} 폴백도 실패: {e2}")
                 failed.append(name)
 
     # ── 나머지 (sas7bdat, oracle 등): 병렬 읽기 + 순차 적재 ──
@@ -468,10 +479,10 @@ def do_load(con, yyyymm, tables: dict):
                 try:
                     results.append(fut.result())
                 except FileNotFoundError:
-                    log.warning(f"  [읽기] {name:20s} 파일 없음 — 건너뜀")
+                    log.warning(f"  [읽기] {_pad(name, 20)} 파일 없음 — 건너뜀")
                     failed.append(name)
                 except Exception as e:
-                    log.error(f"  [읽기] {name:20s} 실패: {e}")
+                    log.error(f"  [읽기] {_pad(name, 20)} 실패: {e}")
                     failed.append(name)
 
         log.info(f"  ── 적재 시작 ({len(results)}개 테이블) ──")
@@ -479,10 +490,10 @@ def do_load(con, yyyymm, tables: dict):
             try:
                 ts = time.time()
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                log.info(f"  [적재] {name:20s} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+                log.info(f"  [적재] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
                 loaded.append(name)
             except Exception as e:
-                log.error(f"  [적재] {name:20s} 실패: {e}")
+                log.error(f"  [적재] {_pad(name, 20)} 실패: {e}")
                 failed.append(name)
 
     return loaded, failed
@@ -586,7 +597,7 @@ def do_export(con, yyyymm, job_name, sheet_map):
                     df.to_excel(writer, sheet_name=sname, index=False)
                     el = time.time() - ts
                     summary.append((tbl, sname, len(df), el))
-                    log.info(f"    {sname:25s}  {len(df):>10,}건  ({el:.1f}초)")
+                    log.info(f"    {_pad(sname, 25)}  {len(df):>10,}건  ({el:.1f}초)")
                 except Exception as e:
                     log.warning(f"    {sheet if isinstance(single_cfg, str) else single_cfg.get('sheet', tbl)} 건너뜀: {e}")
 
