@@ -403,7 +403,7 @@ def do_load(con, yyyymm, tables: dict):
         ttype = cfg["type"]
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
-            log.info(f"  [읽기] {name:20s} ← {path.name}  (DuckDB 네이티브)")
+            log.info(f"  [읽기] {name:20s} ← {path.name}")
             ts = time.time()
 
             if ttype == "fwf":
