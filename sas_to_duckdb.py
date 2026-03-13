@@ -273,8 +273,12 @@ def _load_oracle(cfg, name, yyyymm):
     log.debug(f"  [Oracle] SQL: {sql_text[:120]}...")
 
     with oracledb.connect(user=user, password=password, dsn=dsn) as conn:
+        cur = conn.cursor()
+        cur.execute(sql_text)
+        cols = [c[0] for c in cur.description]
+        rows = cur.fetchall()
         import pandas as pd
-        df = pd.read_sql(sql_text, conn)
+        df = pd.DataFrame(rows, columns=cols)
 
     log.info(f"  [Oracle] {name:20s} {len(df):>12,}건")
     return df
