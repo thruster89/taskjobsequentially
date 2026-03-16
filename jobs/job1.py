@@ -15,6 +15,7 @@ DESC = "원천 데이터 집계 (보험료)"
 TABLES = {
     "fio841": {
         "type": "fwf",
+        "native": True,
         "file": "fioBtLtrJ841_01_{YYYYMM}.DAT",
         "desc": "수입보험료(유지비·신계약비 원천)",
         "month_col": "CLS_YYMM",
@@ -54,6 +55,7 @@ TABLES = {
 
     "fio843": {
         "type": "fwf",
+        "native": True,
         "file": "fioBtLtrJ843_01_{YYYYMM}.DAT",
         "desc": "사업비배분 보유건수",
         "month_col": "CLS_YYMM",

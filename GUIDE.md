@@ -167,6 +167,7 @@ TABLES = {                          # 테이블 정의 (필수)
     # ── 유형A: 고정폭(fwf) ──
     "fio841": {
         "type": "fwf",
+        "native": True,             # 한글 없으면 DuckDB 네이티브 (빠름)
         "file": "fioBtLtrJ841_01_{YYYYMM}.DAT",
         "desc": "수입보험료",
         "month_col": "CLS_YYMM",
@@ -322,6 +323,22 @@ EXPORT_SHEETS = {
 | 파이프 구분자 | `pipe` | `cols` (컬럼명 리스트) | `\|` 구분 DAT 파일 |
 | SAS 데이터셋 | `sas7bdat` | — | pyreadstat로 읽기 |
 | Oracle DB | `oracle` | `sql`, `dsn` | Oracle에서 SQL로 추출 |
+
+#### FWF native 옵션
+
+한글이 없는 FWF 파일은 `"native": True`를 추가하면 DuckDB C++ 엔진으로 직접 처리하여 속도가 크게 향상됩니다.
+
+```python
+"fio841": {
+    "type": "fwf",
+    "native": True,          # ← 한글 없는 파일만! DuckDB SUBSTR로 직접 파싱
+    "file": "fioBtLtrJ841_01_{YYYYMM}.DAT",
+    "cols": [((0, 6), "CLS_YYMM"), ...],
+}
+```
+
+> **주의:** 한글(cp949 멀티바이트)이 포함된 FWF는 `native` 사용 금지.
+> DuckDB `SUBSTR()`은 글자 단위이므로 바이트 위치가 밀립니다.
 
 #### Oracle DSN 형식
 

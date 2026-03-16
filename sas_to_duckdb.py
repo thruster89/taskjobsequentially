@@ -450,8 +450,11 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
     # DuckDB 네이티브 대상 (pipe, csv) / 나머지 (fwf, sas7bdat, oracle 등) 분리
     # fwf 는 SAS colspec 이 바이트 위치이므로 SUBSTR(글자 기반) 대신
     # 바이트 슬라이싱 pandas 경로를 사용해야 cp949 한글 위치가 밀리지 않음
+    # 단, 한글 없는 fwf 파일은 "native": True 를 명시하면 DuckDB 네이티브로 처리
     native_types = {"pipe", "csv"}
     def _is_native(cfg):
+        if cfg.get("type") == "fwf" and cfg.get("native"):
+            return True
         return cfg.get("type") in native_types
     native_tables = {k: v for k, v in tables.items() if _is_native(v)}
     other_tables = {k: v for k, v in tables.items() if k not in native_tables}
