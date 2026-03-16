@@ -299,6 +299,13 @@ EXPORT_SHEETS = {
         "sheet": "전체합산",
         "sql": "SELECT * FROM tfc81 UNION ALL SELECT * FROM tfc82",
     },
+
+    # ⑦ {yyyymm} 플레이스홀더 (테이블 키·시트명·SQL에서 자동 치환)
+    "tfc81_{yyyymm}": "tfc81_{yyyymm}",
+    "monthly_data": {
+        "sheet": "월별_{yyyymm}",
+        "where": "YYYYMM = '{yyyymm}'",
+    },
 }
 ```
 
@@ -314,6 +321,7 @@ EXPORT_SHEETS = {
 > `sql`을 지정하면 `columns`, `where`, `order_by`, `limit`는 무시됩니다.
 > `sql` 키를 사용할 때 dict key는 실제 테이블명이 아니어도 됩니다 (JOIN, UNION 등에 활용).
 > `out_` 접두사 테이블은 여전히 자동 추가됩니다.
+> 테이블 키, 시트명, SQL/where 등 모든 문자열에서 `{yyyymm}` 플레이스홀더가 자동 치환됩니다 (f-string 불필요).
 
 ### TABLES 타입별 설정
 
@@ -365,7 +373,7 @@ from sas_to_duckdb import sql, table_exists, check, check_sum, check_diff, row_c
 |------|------|-----------|
 | `sql(con, label, query)` | SQL 실행 + CREATE TABLE이면 건수 로깅 | logic |
 | `table_exists(con, name)` | 테이블 존재 여부 확인 | logic / validate |
-| `row_count(con, table)` | 테이블 건수 로깅 | validate |
+| `row_count(con, table, group_by, where)` | 테이블 건수 로깅 (조건부/그룹별) | validate |
 | `check(con, label, query, expect)` | 건수 검증 (0건/N건/1건 이상) | validate |
 | `check_sum(con, label, query)` | 합계값 표시 (여러 컬럼 지원) | validate |
 | `check_diff(con, label, qA, qB, group_cols, sum_col)` | 두 쿼리 결과 차이 비교 | validate |
@@ -382,6 +390,12 @@ def logic(con, yyyymm):
 def validate(con, yyyymm):
     # 건수 확인
     row_count(con, "result")
+
+    # 조건부 건수 확인
+    row_count(con, "result", where=f"YYYYMM = '{yyyymm}'")
+
+    # 그룹별 + 조건부 건수
+    row_count(con, "result", group_by="TYPE_CD", where=f"YYYYMM = '{yyyymm}'")
 
     # 이상 데이터 0건이어야 정상
     check(con, "중복 체크", "SELECT COUNT(*) FROM result GROUP BY key HAVING COUNT(*) > 1")
