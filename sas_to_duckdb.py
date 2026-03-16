@@ -643,21 +643,21 @@ def _build_export_query(tbl, cfg, yyyymm=None):
 
     # sql이 있으면 그대로 사용 (columns/where 무시)
     if "sql" in cfg:
-        sql = cfg["sql"].replace("{yyyymm}", yyyymm) if yyyymm else cfg["sql"]
-        return sql, sheet
+        query = cfg["sql"].replace("{yyyymm}", yyyymm) if yyyymm else cfg["sql"]
+        return query, sheet
 
     cols = ", ".join(cfg["columns"]) if "columns" in cfg else "*"
-    sql = f"SELECT {cols} FROM {tbl}"
+    query = f"SELECT {cols} FROM {tbl}"
     if "where" in cfg:
-        sql += f" WHERE {cfg['where']}"
+        query += f" WHERE {cfg['where']}"
     if "order_by" in cfg:
-        sql += f" ORDER BY {cfg['order_by']}"
+        query += f" ORDER BY {cfg['order_by']}"
     if "limit" in cfg:
-        sql += f" LIMIT {cfg['limit']}"
+        query += f" LIMIT {cfg['limit']}"
 
     if yyyymm:
-        sql = sql.replace("{yyyymm}", yyyymm)
-    return sql, sheet
+        query = query.replace("{yyyymm}", yyyymm)
+    return query, sheet
 
 
 def _next_output_path(out_dir, job_name, yyyymm):
