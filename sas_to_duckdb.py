@@ -622,7 +622,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
     return loaded, failed
 
 
-def _build_export_query(tbl, cfg):
+def _build_export_query(tbl, cfg, yyyymm=None):
     """EXPORT_SHEETS 값(str 또는 dict)으로부터 SQL과 시트명을 생성한다.
 
     지원 형식:
@@ -640,7 +640,8 @@ def _build_export_query(tbl, cfg):
 
     # sql이 있으면 그대로 사용 (columns/where 무시)
     if "sql" in cfg:
-        return cfg["sql"], sheet
+        sql = cfg["sql"].replace("{yyyymm}", yyyymm) if yyyymm else cfg["sql"]
+        return sql, sheet
 
     cols = ", ".join(cfg["columns"]) if "columns" in cfg else "*"
     sql = f"SELECT {cols} FROM {tbl}"
@@ -651,6 +652,8 @@ def _build_export_query(tbl, cfg):
     if "limit" in cfg:
         sql += f" LIMIT {cfg['limit']}"
 
+    if yyyymm:
+        sql = sql.replace("{yyyymm}", yyyymm)
     return sql, sheet
 
 
@@ -714,7 +717,7 @@ def do_export(con, yyyymm, job_name, sheet_map):
             for single_cfg in cfgs:
                 try:
                     ts = time.time()
-                    sql, sheet = _build_export_query(tbl, single_cfg)
+                    sql, sheet = _build_export_query(tbl, single_cfg, yyyymm)
                     df = con.execute(sql).df()
                     sname = sheet[:31]
                     df.to_excel(writer, sheet_name=sname, index=False)
