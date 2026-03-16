@@ -738,7 +738,8 @@ def do_export(con, yyyymm, job_name, sheet_map):
                     summary.append((tbl, sname, len(df), el))
                     log.info(f"    {_pad(sname, 25)}  {len(df):>10,}건  ({el:.1f}초)")
                 except Exception as e:
-                    log.warning(f"    {sheet if isinstance(single_cfg, str) else single_cfg.get('sheet', tbl)} 건너뜀: {e}")
+                    err_sheet = (single_cfg if isinstance(single_cfg, str) else single_cfg.get("sheet", tbl)).replace("{yyyymm}", yyyymm)
+                    log.warning(f"    {err_sheet} 건너뜀: {e}")
 
         _write_summary_sheet(writer, yyyymm, summary)
 
