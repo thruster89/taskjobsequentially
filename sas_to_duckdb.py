@@ -908,13 +908,14 @@ def main():
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py
   python sas_to_duckdb.py --ym 202601 --job jobs/job2.py --skip-load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
+  python sas_to_duckdb.py --ym 202601 202602 --job jobs/job1.py jobs/job2.py  # 월별 순차
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s logic validate
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -t fio841 fio842
         """
     )
-    parser.add_argument("--ym", type=str, default="202601",
-                        help="처리할 년월 (기본: 202601)")
+    parser.add_argument("--ym", type=str, nargs="+", default=["202601"],
+                        help="처리할 년월 (복수 가능, 예: --ym 202601 202602)")
     parser.add_argument("--job", "-j", nargs="+", required=True,
                         help="실행할 JOB 파일 경로 (예: jobs/job1.py)")
     parser.add_argument("--skip-load", action="store_true",
@@ -940,10 +941,10 @@ def main():
             if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
                 h.setLevel(logging.DEBUG)
 
-    yyyymm = args.ym
+    ym_list = args.ym
     db_path = ROOT / "db" / "ifrs4-expense.duckdb"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    log.info(f"대상 월: {yyyymm}")
+    log.info(f"대상 월: {', '.join(ym_list)}")
     log.info(f"DB    : {db_path}")
 
     # JOB 모듈 로드
@@ -955,20 +956,25 @@ def main():
             log.error(str(e))
             return
 
-    # 순차 실행
+    # 순차 실행: ym → job 순서
     con = duckdb.connect(str(db_path))
     try:
         t_total = time.time()
         failed_jobs = []
-        for mod in job_mods:
-            try:
-                run_job(con, mod, yyyymm, skip_load=args.skip_load,
-                        stages=args.stage, only_tables=args.tables,
-                        load_timeout=args.load_timeout)
-            except Exception as e:
-                name = getattr(mod, "NAME", str(mod))
-                log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")
-                failed_jobs.append(name)
+        for yyyymm in ym_list:
+            if len(ym_list) > 1:
+                log.info("═" * 60)
+                log.info(f"▶ 월별 실행 시작: {yyyymm}")
+                log.info("═" * 60)
+            for mod in job_mods:
+                try:
+                    run_job(con, mod, yyyymm, skip_load=args.skip_load,
+                            stages=args.stage, only_tables=args.tables,
+                            load_timeout=args.load_timeout)
+                except Exception as e:
+                    name = getattr(mod, "NAME", str(mod))
+                    log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")
+                    failed_jobs.append(f"{yyyymm}/{name}")
         if failed_jobs:
             log.warning(f"실패한 JOB: {failed_jobs}")
         log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
