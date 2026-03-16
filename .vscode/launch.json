@@ -1,0 +1,85 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "job1 전체",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job1.py"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job1 LOAD만",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job1.py", "--stage", "load"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job1 LOGIC만 (skip-load)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job1.py", "--stage", "logic"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job1 VALIDATE만",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job1.py", "--stage", "validate"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job1 EXPORT만",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job1.py", "--stage", "export"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job2 전체",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job2.py"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job3 전체",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job3.py"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job1+2+3 순차 실행",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job1.py", "jobs/job2.py", "jobs/job3.py"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job1 특정 테이블만 로드",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job1.py", "--stage", "load", "--tables", "fio841", "fio842"],
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "job1 verbose",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "sas_to_duckdb.py",
+            "args": ["--ym", "202601", "--job", "jobs/job1.py", "-v"],
+            "console": "integratedTerminal"
+        }
+    ]
+}
