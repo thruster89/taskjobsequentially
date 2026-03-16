@@ -700,6 +700,9 @@ def do_export(con, yyyymm, job_name, sheet_map):
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = _next_output_path(out_dir, job_name, yyyymm)
 
+    # 테이블 키의 {yyyymm} 플레이스홀더를 실제 월로 치환
+    sheet_map = {k.replace("{yyyymm}", yyyymm): v for k, v in sheet_map.items()}
+
     # out_ 접두사 테이블 자동 추가
     db_tables = [r[0] for r in con.execute(
         "SELECT table_name FROM information_schema.tables "
