@@ -248,15 +248,16 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
     return ok
 
 
-def row_count(con, table, group_by=None):
-    """테이블 건수 로깅. group_by 지정 시 그룹별 건수 출력."""
+def row_count(con, table, group_by=None, where=None):
+    """테이블 건수 로깅. group_by 지정 시 그룹별, where 지정 시 조건부 건수 출력."""
     if not table_exists(con, table):
         log.warning(f"  [--] {_pad(table, 45)}  테이블 없음")
         return 0
+    w = f" WHERE {where}" if where else ""
     if group_by:
         cols = group_by if isinstance(group_by, str) else ", ".join(group_by)
         rows = con.execute(
-            f"SELECT {cols}, COUNT(*) AS cnt FROM {table} GROUP BY {cols} ORDER BY {cols}"
+            f"SELECT {cols}, COUNT(*) AS cnt FROM {table}{w} GROUP BY {cols} ORDER BY {cols}"
         ).fetchall()
         total = 0
         for row in rows:
@@ -265,7 +266,7 @@ def row_count(con, table, group_by=None):
             log.info(f"  [OK] {_pad(table, 30)}  {key:>14s}  {row[-1]:>12,}건")
         log.info(f"  [OK] {_pad(table, 30)}  {'합계':>14s}  {total:>12,}건")
         return total
-    cnt = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    cnt = con.execute(f"SELECT COUNT(*) FROM {table}{w}").fetchone()[0]
     log.info(f"  [OK] {_pad(table, 45)}  {cnt:>12,}건")
     return cnt
 
