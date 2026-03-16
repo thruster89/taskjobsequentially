@@ -460,6 +460,9 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
     loaded, failed = [], []
     tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
+    # 테이블 키의 {YYYYMM} 플레이스홀더를 실제 월로 치환
+    tables = {k.replace("{YYYYMM}", yyyymm): v for k, v in tables.items()}
+
     # DuckDB 네이티브 대상 (pipe, csv) / 나머지 (fwf, sas7bdat, oracle 등) 분리
     # fwf 는 SAS colspec 이 바이트 위치이므로 SUBSTR(글자 기반) 대신
     # 바이트 슬라이싱 pandas 경로를 사용해야 cp949 한글 위치가 밀리지 않음
