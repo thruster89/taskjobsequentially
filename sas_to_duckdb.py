@@ -118,6 +118,19 @@ def sql(con, label, query, params=None):
         log.info(f"  {_pad(label, 50)}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
 
 
+def prev_ym(yyyymm, n=1):
+    """YYYYMM 기준 n개월 전 YYYYMM 문자열 반환 (기본 1개월 전)"""
+    y, m = int(yyyymm[:4]), int(yyyymm[4:])
+    m -= n
+    while m < 1:
+        y -= 1
+        m += 12
+    while m > 12:
+        y += 1
+        m -= 12
+    return f"{y}{m:02d}"
+
+
 def table_exists(con, name):
     """테이블 존재 여부"""
     cnt = con.execute(
