@@ -922,10 +922,18 @@ def main():
     con = duckdb.connect(str(db_path))
     try:
         t_total = time.time()
+        failed_jobs = []
         for mod in job_mods:
-            run_job(con, mod, yyyymm, skip_load=args.skip_load,
-                    stages=args.stage, only_tables=args.tables,
-                    load_timeout=args.load_timeout)
+            try:
+                run_job(con, mod, yyyymm, skip_load=args.skip_load,
+                        stages=args.stage, only_tables=args.tables,
+                        load_timeout=args.load_timeout)
+            except Exception as e:
+                name = getattr(mod, "NAME", str(mod))
+                log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")
+                failed_jobs.append(name)
+        if failed_jobs:
+            log.warning(f"실패한 JOB: {failed_jobs}")
         log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
     finally:
         con.close()
