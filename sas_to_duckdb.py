@@ -477,13 +477,14 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
         ttype = cfg["type"]
         timer = None
         ts = time.time()
+        t = cfg.get("timeout", tmo)  # 테이블별 timeout 우선
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
             log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
 
             # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
-            if tmo > 0:
-                timer = threading.Timer(tmo, lambda: con.interrupt())
+            if t > 0:
+                timer = threading.Timer(t, lambda: con.interrupt())
                 timer.start()
 
             # 테이블 정의에 encoding 있으면 우선 사용
@@ -529,8 +530,8 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 timer.cancel()
             elapsed = time.time() - ts
             # 타임아웃 여부 판별
-            if tmo > 0 and elapsed >= tmo - 1:
-                log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({tmo}초 초과) — 건너뜀")
+            if t > 0 and elapsed >= t - 1:
+                log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
                 continue
             log.warning(f"  [읽기] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
@@ -549,10 +550,10 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                                              encodings=pd_encs,
                                              delimiter=cfg.get("delimiter", "|"))
 
-                if tmo > 0:
+                if t > 0:
                     with ThreadPoolExecutor(max_workers=1) as fb_pool:
                         fb_fut = fb_pool.submit(_pandas_fallback)
-                        df = fb_fut.result(timeout=tmo)
+                        df = fb_fut.result(timeout=t)
                 else:
                     df = _pandas_fallback()
 
@@ -560,7 +561,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
                 loaded.append(name)
             except TimeoutError:
-                log.error(f"  [읽기] {_pad(name, 20)} 폴백 타임아웃 ({tmo}초 초과) — 건너뜀")
+                log.error(f"  [읽기] {_pad(name, 20)} 폴백 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
             except Exception as e2:
                 log.error(f"  [읽기] {_pad(name, 20)} 폴백도 실패: {e2}")
@@ -578,11 +579,12 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
             }
             for fut in as_completed(futures):
                 name = futures[fut]
+                t = other_tables[name].get("timeout", tmo)  # 테이블별 timeout 우선
                 try:
-                    result_timeout = tmo if tmo > 0 else None
+                    result_timeout = t if t > 0 else None
                     results.append(fut.result(timeout=result_timeout))
                 except TimeoutError:
-                    log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({tmo}초 초과) — 건너뜀")
+                    log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
                     failed.append(name)
                 except FileNotFoundError:
                     log.warning(f"  [읽기] {_pad(name, 20)} 파일 없음 — 건너뜀")
