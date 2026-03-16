@@ -483,12 +483,12 @@ def _read_one(name, cfg, base_path, yyyymm):
     ts = time.time()
     if cfg.get("type") == "oracle":
         df = _load_oracle(cfg, name, yyyymm)
-        log.info(f"  [읽기] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [Read] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     else:
         path = _resolve_path(base_path, cfg["file"], yyyymm)
-        log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
+        log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
         df = _load_file(path, cfg, name)
-        log.info(f"  [읽기] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [Read] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     return name, cfg, df
 
 
@@ -524,7 +524,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
         t = cfg.get("timeout", tmo)  # 테이블별 timeout 우선
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
-            log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
+            log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
 
             # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
             if t > 0:
@@ -567,7 +567,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                     con.execute(f"DELETE FROM {name}")
                 con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
             con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
-            log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+            log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             loaded.append(name)
         except Exception as e:
             if timer:
@@ -575,10 +575,10 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
             elapsed = time.time() - ts
             # 타임아웃 여부 판별
             if t > 0 and elapsed >= t - 1:
-                log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
+                log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
                 continue
-            log.warning(f"  [읽기] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
+            log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
             try:
                 ts_fb = time.time()
                 # pandas 폴백에도 타임아웃 적용
@@ -602,20 +602,20 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                     df = _pandas_fallback()
 
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
+                log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
                 loaded.append(name)
             except TimeoutError:
-                log.error(f"  [읽기] {_pad(name, 20)} 폴백 타임아웃 ({t}초 초과) — 건너뜀")
+                log.error(f"  [Read] {_pad(name, 20)} 폴백 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
             except Exception as e2:
-                log.error(f"  [읽기] {_pad(name, 20)} 폴백도 실패: {e2}")
+                log.error(f"  [Read] {_pad(name, 20)} 폴백도 실패: {e2}")
                 failed.append(name)
 
     # ── 나머지 (sas7bdat, oracle 등): 병렬 읽기 + 순차 적재 ──
     if other_tables:
         results = []
         workers = min(MAX_READ_WORKERS, len(other_tables))
-        log.info(f"  병렬 읽기 시작 (workers={workers}, 테이블={len(other_tables)}개)")
+        log.info(f"  병렬 Read 시작 (workers={workers}, 테이블={len(other_tables)}개)")
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 name: pool.submit(_read_one, name, cfg, base_path, yyyymm)
@@ -627,24 +627,24 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                     result_timeout = t if t > 0 else None
                     results.append(fut.result(timeout=result_timeout))
                 except TimeoutError:
-                    log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
+                    log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
                     failed.append(name)
                 except FileNotFoundError:
-                    log.warning(f"  [읽기] {_pad(name, 20)} 파일 없음 — 건너뜀")
+                    log.warning(f"  [Read] {_pad(name, 20)} 파일 없음 — 건너뜀")
                     failed.append(name)
                 except Exception as e:
-                    log.error(f"  [읽기] {_pad(name, 20)} 실패: {e}")
+                    log.error(f"  [Read] {_pad(name, 20)} 실패: {e}")
                     failed.append(name)
 
-        log.info(f"  ── 적재 시작 ({len(results)}개 테이블) ──")
+        log.info(f"  ── Load 시작 ({len(results)}개 테이블) ──")
         for name, cfg, df in results:
             try:
                 ts = time.time()
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                log.info(f"  [적재] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+                log.info(f"  [Load] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
                 loaded.append(name)
             except Exception as e:
-                log.error(f"  [적재] {_pad(name, 20)} 실패: {e}")
+                log.error(f"  [Load] {_pad(name, 20)} 실패: {e}")
                 failed.append(name)
 
     return loaded, failed
