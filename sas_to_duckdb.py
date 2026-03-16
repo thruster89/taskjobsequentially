@@ -140,6 +140,16 @@ def table_exists(con, name):
     return cnt > 0
 
 
+def require_tables(con, *names):
+    """모든 테이블이 존재하는지 확인. 없는 테이블은 경고 로그 출력."""
+    missing = [n for n in names if not table_exists(con, n)]
+    if missing:
+        for n in missing:
+            log.warning(f"  [--] {_pad(n, 45)}  테이블 없음 — 건너뜀")
+        return False
+    return True
+
+
 def check(con, label, query, expect="zero"):
     """
     검증용 헬퍼. SELECT 결과를 로깅만 하고 테이블은 만들지 않음.
