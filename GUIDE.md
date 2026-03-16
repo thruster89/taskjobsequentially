@@ -167,7 +167,8 @@ TABLES = {                          # 테이블 정의 (필수)
     # ── 유형A: 고정폭(fwf) ──
     "fio841": {
         "type": "fwf",
-        "file": "fioBtLtrJ841_01_{YYYYMM}.DAT",
+        "native": True,             # 한글 없으면 DuckDB 네이티브 (빠름)
+        "file": "fioBtLtrJ841_01_{yyyymm}.DAT",
         "desc": "수입보험료",
         "month_col": "CLS_YYMM",
         "numeric": ["RP_PRM", "AF_PRM"],
@@ -180,7 +181,7 @@ TABLES = {                          # 테이블 정의 (필수)
     # ── 유형B: 파이프 구분자(pipe) ──
     "sa01": {
         "type": "pipe",
-        "file": "RS100_{YYYYMM}.DAT",
+        "file": "RS100_{yyyymm}.DAT",
         "desc": "유지비 배분결과",
         "month_col": "SLPDT",
         "numeric": ["DV_RT", "DVAMT"],
@@ -189,7 +190,7 @@ TABLES = {                          # 테이블 정의 (필수)
     # ── 유형C: SAS 데이터셋(sas7bdat) ──
     "ey_table": {
         "type": "sas7bdat",
-        "file": "EY_A{YYYYMM}.sas7bdat",
+        "file": "EY_A{yyyymm}.sas7bdat",
         "desc": "이연 데이터",
         "month_col": None,          # 없으면 전체 교체
         "numeric": ["AMT"],         # 대부분 자동 감지, 추가 캐스팅 필요 시 지정
@@ -200,7 +201,7 @@ TABLES = {                          # 테이블 정의 (필수)
     "ora_table": {
         "type": "oracle",
         **ORA_DEV,                  # from oracle_config import ORA_DEV
-        "sql": "SELECT * FROM schema.table WHERE yyyymm = '{YYYYMM}'",
+        "sql": "SELECT * FROM schema.table WHERE yyyymm = '{yyyymm}'",
         "desc": "Oracle에서 추출",
         "month_col": None,          # 전체 교체
     },
@@ -323,6 +324,22 @@ EXPORT_SHEETS = {
 | SAS 데이터셋 | `sas7bdat` | — | pyreadstat로 읽기 |
 | Oracle DB | `oracle` | `sql`, `dsn` | Oracle에서 SQL로 추출 |
 
+#### FWF native 옵션
+
+한글이 없는 FWF 파일은 `"native": True`를 추가하면 DuckDB C++ 엔진으로 직접 처리하여 속도가 크게 향상됩니다.
+
+```python
+"fio841": {
+    "type": "fwf",
+    "native": True,          # ← 한글 없는 파일만! DuckDB SUBSTR로 직접 파싱
+    "file": "fioBtLtrJ841_01_{yyyymm}.DAT",
+    "cols": [((0, 6), "CLS_YYMM"), ...],
+}
+```
+
+> **주의:** 한글(cp949 멀티바이트)이 포함된 FWF는 `native` 사용 금지.
+> DuckDB `SUBSTR()`은 글자 단위이므로 바이트 위치가 밀립니다.
+
 #### Oracle DSN 형식
 
 ```python
@@ -416,7 +433,7 @@ def validate(con, yyyymm):
 | 단계 | 내용 |
 |------|------|
 | LOAD | `sa01` (유지비·신계약비), `sa02` (손해조사비) |
-| LOGIC | `sa11` → `sa12` → `sa20` → `sa_{YYYYMM}`, `TEMP01` (이연), `out_SA000`, `out_SA001` |
+| LOGIC | `sa11` → `sa12` → `sa20` → `sa_{yyyymm}`, `TEMP01` (이연), `out_SA000`, `out_SA001` |
 | VALIDATE | 건수, 전표 vs 배분결과 시산표 비교 |
 | EXPORT | `job2_YYYYMM.xlsx` |
 

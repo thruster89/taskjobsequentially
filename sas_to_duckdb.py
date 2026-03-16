@@ -118,6 +118,19 @@ def sql(con, label, query, params=None):
         log.info(f"  {_pad(label, 50)}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
 
 
+def prev_ym(yyyymm, n=1):
+    """YYYYMM 기준 n개월 전 YYYYMM 문자열 반환 (기본 1개월 전)"""
+    y, m = int(yyyymm[:4]), int(yyyymm[4:])
+    m -= n
+    while m < 1:
+        y -= 1
+        m += 12
+    while m > 12:
+        y += 1
+        m -= 12
+    return f"{y}{m:02d}"
+
+
 def table_exists(con, name):
     """테이블 존재 여부"""
     cnt = con.execute(
@@ -247,7 +260,7 @@ def row_count(con, table):
 
 def _resolve_path(base, file_template, yyyymm):
     """파일 확장자 순서대로 탐색"""
-    stem = Path(file_template.format(YYYYMM=yyyymm)).stem
+    stem = Path(file_template.format(yyyymm=yyyymm)).stem
     if stem.lower().endswith(".dat"):
         stem = stem[:-4]
     for ext in FILE_EXTENSIONS:
@@ -306,7 +319,7 @@ def _load_oracle(cfg, name, yyyymm):
     dsn = _make_oracle_dsn(cfg)
     user = cfg.get("user", "")
     password = cfg.get("password", "")
-    sql_text = cfg["sql"].replace("{YYYYMM}", yyyymm)
+    sql_text = cfg["sql"].replace("{yyyymm}", yyyymm)
 
     log.info(f"  [Oracle] {_pad(name, 20)} ← {dsn}")
     log.debug(f"  [Oracle] SQL: {sql_text[:120]}...")
@@ -447,11 +460,17 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
     loaded, failed = [], []
     tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
+    # 테이블 키의 {yyyymm} 플레이스홀더를 실제 월로 치환
+    tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
+
     # DuckDB 네이티브 대상 (pipe, csv) / 나머지 (fwf, sas7bdat, oracle 등) 분리
     # fwf 는 SAS colspec 이 바이트 위치이므로 SUBSTR(글자 기반) 대신
     # 바이트 슬라이싱 pandas 경로를 사용해야 cp949 한글 위치가 밀리지 않음
+    # 단, 한글 없는 fwf 파일은 "native": True 를 명시하면 DuckDB 네이티브로 처리
     native_types = {"pipe", "csv"}
     def _is_native(cfg):
+        if cfg.get("type") == "fwf" and cfg.get("native"):
+            return True
         return cfg.get("type") in native_types
     native_tables = {k: v for k, v in tables.items() if _is_native(v)}
     other_tables = {k: v for k, v in tables.items() if k not in native_tables}
@@ -461,13 +480,14 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
         ttype = cfg["type"]
         timer = None
         ts = time.time()
+        t = cfg.get("timeout", tmo)  # 테이블별 timeout 우선
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
             log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
 
             # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
-            if tmo > 0:
-                timer = threading.Timer(tmo, lambda: con.interrupt())
+            if t > 0:
+                timer = threading.Timer(t, lambda: con.interrupt())
                 timer.start()
 
             # 테이블 정의에 encoding 있으면 우선 사용
@@ -513,8 +533,8 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 timer.cancel()
             elapsed = time.time() - ts
             # 타임아웃 여부 판별
-            if tmo > 0 and elapsed >= tmo - 1:
-                log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({tmo}초 초과) — 건너뜀")
+            if t > 0 and elapsed >= t - 1:
+                log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
                 continue
             log.warning(f"  [읽기] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
@@ -533,10 +553,10 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                                              encodings=pd_encs,
                                              delimiter=cfg.get("delimiter", "|"))
 
-                if tmo > 0:
+                if t > 0:
                     with ThreadPoolExecutor(max_workers=1) as fb_pool:
                         fb_fut = fb_pool.submit(_pandas_fallback)
-                        df = fb_fut.result(timeout=tmo)
+                        df = fb_fut.result(timeout=t)
                 else:
                     df = _pandas_fallback()
 
@@ -544,7 +564,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
                 loaded.append(name)
             except TimeoutError:
-                log.error(f"  [읽기] {_pad(name, 20)} 폴백 타임아웃 ({tmo}초 초과) — 건너뜀")
+                log.error(f"  [읽기] {_pad(name, 20)} 폴백 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
             except Exception as e2:
                 log.error(f"  [읽기] {_pad(name, 20)} 폴백도 실패: {e2}")
@@ -562,11 +582,12 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
             }
             for fut in as_completed(futures):
                 name = futures[fut]
+                t = other_tables[name].get("timeout", tmo)  # 테이블별 timeout 우선
                 try:
-                    result_timeout = tmo if tmo > 0 else None
+                    result_timeout = t if t > 0 else None
                     results.append(fut.result(timeout=result_timeout))
                 except TimeoutError:
-                    log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({tmo}초 초과) — 건너뜀")
+                    log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
                     failed.append(name)
                 except FileNotFoundError:
                     log.warning(f"  [읽기] {_pad(name, 20)} 파일 없음 — 건너뜀")

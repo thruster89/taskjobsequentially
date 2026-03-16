@@ -126,14 +126,17 @@ JOB의 `TABLES` dict를 기반으로 파일을 읽어 DuckDB에 적재합니다.
 ```
 TABLES
   │
-  ├─ native (pipe, csv)     → DuckDB C++ 엔진 직접 읽기 (빠름)
-  │   └─ 실패 시            → pandas 폴백
+  ├─ native (pipe, csv, fwf+native)  → DuckDB C++ 엔진 직접 읽기 (빠름)
+  │   └─ 실패 시                     → pandas 폴백
   │
   └─ other (fwf, sas7bdat, oracle)
       └─ ThreadPoolExecutor  → 병렬 읽기 → 순차 적재
 ```
 
-**Native (pipe, csv):**
+FWF 테이블에 `"native": True`를 명시하면 DuckDB SUBSTR 경로로 직접 처리합니다.
+한글이 포함된 FWF는 SUBSTR이 글자 단위라 바이트 위치가 밀리므로 native를 쓰면 안 됩니다.
+
+**Native (pipe, csv, fwf+native):**
 1. `read_csv()`로 줄 단위 단일 컬럼 `_pipe_raw` 테이블 생성
 2. `string_split()` 또는 `SUBSTR()`로 컬럼 분리 → `_pipe_parsed` 임시 테이블
 3. `_pipe_parsed` → 실제 테이블로 upsert
@@ -288,7 +291,7 @@ EXPORT_SHEETS = { ... }          # Excel 출력 시트 매핑
 TABLES = {
     "테이블명": {
         "type": "fwf|pipe|csv|sas7bdat|oracle",
-        "file": "파일명_{YYYYMM}.DAT",        # {YYYYMM} 자동 치환
+        "file": "파일명_{yyyymm}.DAT",        # {yyyymm} 자동 치환
         "month_col": "CLS_YYMM",              # 월별 누적 기준 컬럼 (None=전체 교체)
         "numeric": ["AMT", "CNT"],             # 숫자형 캐스팅 컬럼
         "cols": [...],                          # fwf: [(start,end),"name"] / pipe: ["name"]

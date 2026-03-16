@@ -15,7 +15,7 @@ DESC = "배분 결과 (SA 변환·집계)"
 TABLES = {
     "sa01": {
         "type": "pipe",
-        "file": "RS100_{YYYYMM}.DAT",
+        "file": "RS100_{yyyymm}.DAT",
         "desc": "유지비·신계약비 배분결과 (RS100)",
         "month_col": "SLPDT",
         "numeric": ["DV_RT", "DVAMT"],
@@ -29,7 +29,7 @@ TABLES = {
 
     "sa02": {
         "type": "pipe",
-        "file": "RS101_{YYYYMM}.DAT",
+        "file": "RS101_{yyyymm}.DAT",
         "desc": "손해조사비 배분결과 (RS101)",
         "month_col": "SLPDT",
         "numeric": ["DV_RT", "DVAMT"],
