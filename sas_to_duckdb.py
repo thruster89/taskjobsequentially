@@ -917,6 +917,7 @@ def main():
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py
   python sas_to_duckdb.py --ym 202601 --job jobs/job2.py --skip-load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
+  python sas_to_duckdb.py --ym 202601 --job-dir jobs          # jobs/ 폴더 전체 이름순 실행
   python sas_to_duckdb.py --ym 202601 202602 --job jobs/job1.py jobs/job2.py  # 월별 순차
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s logic validate
@@ -925,8 +926,10 @@ def main():
     )
     parser.add_argument("--ym", type=str, nargs="+", default=["202601"],
                         help="처리할 년월 (복수 가능, 예: --ym 202601 202602)")
-    parser.add_argument("--job", "-j", nargs="+", required=True,
+    parser.add_argument("--job", "-j", nargs="+",
                         help="실행할 JOB 파일 경로 (예: jobs/job1.py)")
+    parser.add_argument("--job-dir", "-d",
+                        help="JOB 폴더 경로 — 폴더 안 *.py를 이름순 순차 실행 (예: jobs)")
     parser.add_argument("--skip-load", action="store_true",
                         help="LOAD 단계 생략")
     parser.add_argument("--stage", "-s", nargs="+",
@@ -950,6 +953,23 @@ def main():
             if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
                 h.setLevel(logging.DEBUG)
 
+    # --job / --job-dir 중 하나는 필수
+    if not args.job and not args.job_dir:
+        parser.error("--job 또는 --job-dir 중 하나를 지정하세요.")
+
+    # --job-dir → 폴더 안 *.py 이름순 정렬
+    job_paths = list(args.job or [])
+    if args.job_dir:
+        d = Path(args.job_dir)
+        if not d.is_dir():
+            log.error(f"JOB 디렉토리를 찾을 수 없습니다: {d}")
+            return
+        found = sorted(d.glob("*.py"))
+        if not found:
+            log.error(f"JOB 디렉토리에 *.py 파일이 없습니다: {d}")
+            return
+        job_paths.extend(str(f) for f in found)
+
     ym_list = args.ym
     db_path = ROOT / "db" / "ifrs4-expense.duckdb"
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -958,7 +978,7 @@ def main():
 
     # JOB 모듈 로드
     job_mods = []
-    for jp in args.job:
+    for jp in job_paths:
         try:
             job_mods.append(load_job_module(jp))
         except (FileNotFoundError, AttributeError) as e:
