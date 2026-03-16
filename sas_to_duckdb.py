@@ -577,11 +577,10 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
         log.info(f"  병렬 읽기 시작 (workers={workers}, 테이블={len(other_tables)}개)")
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(_read_one, name, cfg, base_path, yyyymm): name
+                name: pool.submit(_read_one, name, cfg, base_path, yyyymm)
                 for name, cfg in other_tables.items()
             }
-            for fut in as_completed(futures):
-                name = futures[fut]
+            for name, fut in futures.items():
                 t = other_tables[name].get("timeout", tmo)  # 테이블별 timeout 우선
                 try:
                     result_timeout = t if t > 0 else None
