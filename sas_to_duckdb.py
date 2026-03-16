@@ -260,7 +260,7 @@ def row_count(con, table):
 
 def _resolve_path(base, file_template, yyyymm):
     """파일 확장자 순서대로 탐색"""
-    stem = Path(file_template.format(YYYYMM=yyyymm)).stem
+    stem = Path(file_template.format(yyyymm=yyyymm)).stem
     if stem.lower().endswith(".dat"):
         stem = stem[:-4]
     for ext in FILE_EXTENSIONS:
@@ -319,7 +319,7 @@ def _load_oracle(cfg, name, yyyymm):
     dsn = _make_oracle_dsn(cfg)
     user = cfg.get("user", "")
     password = cfg.get("password", "")
-    sql_text = cfg["sql"].replace("{YYYYMM}", yyyymm)
+    sql_text = cfg["sql"].replace("{yyyymm}", yyyymm)
 
     log.info(f"  [Oracle] {_pad(name, 20)} ← {dsn}")
     log.debug(f"  [Oracle] SQL: {sql_text[:120]}...")
@@ -460,8 +460,8 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
     loaded, failed = [], []
     tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
-    # 테이블 키의 {YYYYMM} 플레이스홀더를 실제 월로 치환
-    tables = {k.replace("{YYYYMM}", yyyymm): v for k, v in tables.items()}
+    # 테이블 키의 {yyyymm} 플레이스홀더를 실제 월로 치환
+    tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
 
     # DuckDB 네이티브 대상 (pipe, csv) / 나머지 (fwf, sas7bdat, oracle 등) 분리
     # fwf 는 SAS colspec 이 바이트 위치이므로 SUBSTR(글자 기반) 대신

@@ -8,7 +8,7 @@ TABLES 정의 예시:
     "ora_table": {
         "type": "oracle",
         **ORA_DEV,
-        "sql": "SELECT * FROM schema.table WHERE yyyymm = '{YYYYMM}'",
+        "sql": "SELECT * FROM schema.table WHERE yyyymm = '{yyyymm}'",
         "month_col": None,
     },
 """

@@ -291,7 +291,7 @@ EXPORT_SHEETS = { ... }          # Excel 출력 시트 매핑
 TABLES = {
     "테이블명": {
         "type": "fwf|pipe|csv|sas7bdat|oracle",
-        "file": "파일명_{YYYYMM}.DAT",        # {YYYYMM} 자동 치환
+        "file": "파일명_{yyyymm}.DAT",        # {yyyymm} 자동 치환
         "month_col": "CLS_YYMM",              # 월별 누적 기준 컬럼 (None=전체 교체)
         "numeric": ["AMT", "CNT"],             # 숫자형 캐스팅 컬럼
         "cols": [...],                          # fwf: [(start,end),"name"] / pipe: ["name"]

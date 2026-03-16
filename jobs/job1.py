@@ -16,7 +16,7 @@ TABLES = {
     "fio841": {
         "type": "fwf",
         "native": True,
-        "file": "fioBtLtrJ841_01_{YYYYMM}.DAT",
+        "file": "fioBtLtrJ841_01_{yyyymm}.DAT",
         "desc": "수입보험료(유지비·신계약비 원천)",
         "month_col": "CLS_YYMM",
         "numeric": ["INCM_PRM_CR_SEQNO", "PYM_SEQ", "RP_PRM", "AF_PRM",
@@ -56,7 +56,7 @@ TABLES = {
     "fio843": {
         "type": "fwf",
         "native": True,
-        "file": "fioBtLtrJ843_01_{YYYYMM}.DAT",
+        "file": "fioBtLtrJ843_01_{yyyymm}.DAT",
         "desc": "사업비배분 보유건수",
         "month_col": "CLS_YYMM",
         "numeric": ["AP_PRM", "BZCS_DV_PS"],

@@ -168,7 +168,7 @@ TABLES = {                          # 테이블 정의 (필수)
     "fio841": {
         "type": "fwf",
         "native": True,             # 한글 없으면 DuckDB 네이티브 (빠름)
-        "file": "fioBtLtrJ841_01_{YYYYMM}.DAT",
+        "file": "fioBtLtrJ841_01_{yyyymm}.DAT",
         "desc": "수입보험료",
         "month_col": "CLS_YYMM",
         "numeric": ["RP_PRM", "AF_PRM"],
@@ -181,7 +181,7 @@ TABLES = {                          # 테이블 정의 (필수)
     # ── 유형B: 파이프 구분자(pipe) ──
     "sa01": {
         "type": "pipe",
-        "file": "RS100_{YYYYMM}.DAT",
+        "file": "RS100_{yyyymm}.DAT",
         "desc": "유지비 배분결과",
         "month_col": "SLPDT",
         "numeric": ["DV_RT", "DVAMT"],
@@ -190,7 +190,7 @@ TABLES = {                          # 테이블 정의 (필수)
     # ── 유형C: SAS 데이터셋(sas7bdat) ──
     "ey_table": {
         "type": "sas7bdat",
-        "file": "EY_A{YYYYMM}.sas7bdat",
+        "file": "EY_A{yyyymm}.sas7bdat",
         "desc": "이연 데이터",
         "month_col": None,          # 없으면 전체 교체
         "numeric": ["AMT"],         # 대부분 자동 감지, 추가 캐스팅 필요 시 지정
@@ -201,7 +201,7 @@ TABLES = {                          # 테이블 정의 (필수)
     "ora_table": {
         "type": "oracle",
         **ORA_DEV,                  # from oracle_config import ORA_DEV
-        "sql": "SELECT * FROM schema.table WHERE yyyymm = '{YYYYMM}'",
+        "sql": "SELECT * FROM schema.table WHERE yyyymm = '{yyyymm}'",
         "desc": "Oracle에서 추출",
         "month_col": None,          # 전체 교체
     },
@@ -332,7 +332,7 @@ EXPORT_SHEETS = {
 "fio841": {
     "type": "fwf",
     "native": True,          # ← 한글 없는 파일만! DuckDB SUBSTR로 직접 파싱
-    "file": "fioBtLtrJ841_01_{YYYYMM}.DAT",
+    "file": "fioBtLtrJ841_01_{yyyymm}.DAT",
     "cols": [((0, 6), "CLS_YYMM"), ...],
 }
 ```
@@ -433,7 +433,7 @@ def validate(con, yyyymm):
 | 단계 | 내용 |
 |------|------|
 | LOAD | `sa01` (유지비·신계약비), `sa02` (손해조사비) |
-| LOGIC | `sa11` → `sa12` → `sa20` → `sa_{YYYYMM}`, `TEMP01` (이연), `out_SA000`, `out_SA001` |
+| LOGIC | `sa11` → `sa12` → `sa20` → `sa_{yyyymm}`, `TEMP01` (이연), `out_SA000`, `out_SA001` |
 | VALIDATE | 건수, 전표 vs 배분결과 시산표 비교 |
 | EXPORT | `job2_YYYYMM.xlsx` |
 

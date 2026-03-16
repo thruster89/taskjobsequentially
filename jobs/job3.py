@@ -15,7 +15,7 @@ DESC = "마감 검증 (ERP·BS)"
 TABLES = {
     "erp": {
         "type": "pipe",
-        "file": "BS100_{YYYYMM}.DAT",
+        "file": "BS100_{yyyymm}.DAT",
         "desc": "ERP 전표 (BS100)",
         "month_col": "SLPDT",
         "numeric": ["CLS_DA_SEQNO", "WONCR_POAMT"],
@@ -30,7 +30,7 @@ TABLES = {
 
     "bs101": {
         "type": "pipe",
-        "file": "BS101_{YYYYMM}.DAT",
+        "file": "BS101_{yyyymm}.DAT",
         "desc": "원수실적마감 (BS101)",
         "month_col": "CLS_YYMM",
         "numeric": ["CLS_DA_SEQNO", "INCM_PRM_CR_SEQNO", "PYM_SEQ",
@@ -51,7 +51,7 @@ TABLES = {
 
     "bs104": {
         "type": "pipe",
-        "file": "BS104_{YYYYMM}.DAT",
+        "file": "BS104_{yyyymm}.DAT",
         "desc": "지급보험금마감 (BS104)",
         "month_col": "CLS_YYMM",
         "numeric": ["CLS_DA_SEQNO", "AP_PRM", "PY_IBAMT",
@@ -71,7 +71,7 @@ TABLES = {
 
     "bs105": {
         "type": "pipe",
-        "file": "BS105_{YYYYMM}.DAT",
+        "file": "BS105_{yyyymm}.DAT",
         "desc": "지급준비금마감 (BS105)",
         "month_col": "CLS_YYMM",
         "numeric": ["CLS_DA_SEQNO", "AP_PRM", "ISAMT", "PY_RFAMT"],
