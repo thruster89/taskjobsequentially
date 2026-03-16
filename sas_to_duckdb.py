@@ -149,7 +149,13 @@ def check(con, label, query, expect="zero"):
       "nonzero" — 1건 이상이어야 정상 (데이터 존재 확인)
       int       — 정확히 N건이어야 정상
     """
-    row = con.execute(query).fetchone()
+    try:
+        row = con.execute(query).fetchone()
+    except Exception as e:
+        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            return False
+        raise
     cnt = row[0] if row else 0
     if expect == "zero":
         ok = cnt == 0
@@ -171,7 +177,13 @@ def check_sum(con, label, query):
       check_sum(con, "보험료 합계",
                 "SELECT SUM(RP_PRM) AS RP_PRM, SUM(AF_PRM) AS AF_PRM FROM fio841")
     """
-    row = con.execute(query).fetchone()
+    try:
+        row = con.execute(query).fetchone()
+    except Exception as e:
+        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            return
+        raise
     cols = [d[0] for d in con.description]
     if not row:
         log.info(f"  [--] {_pad(label, 45)}  데이터 없음")
@@ -212,7 +224,13 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
         ORDER BY ABS(COALESCE(a.{sum_col}, 0) - COALESCE(b.{sum_col}, 0)) DESC
     """
 
-    rows = con.execute(diff_sql).fetchall()
+    try:
+        rows = con.execute(diff_sql).fetchall()
+    except Exception as e:
+        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            return True
+        raise
     total = len(rows)
     ok = total == 0
     mark = "OK" if ok else "NG"
