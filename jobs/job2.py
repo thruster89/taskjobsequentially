@@ -4,7 +4,7 @@ JOB 2: 배분 결과 (SA 변환·집계)
 2차 파일 수신 후 실행 (job1 완료 후):
   python sas_to_duckdb.py --ym 202601 --job jobs/job2.py
 """
-from sas_to_duckdb import sql, table_exists, check, row_count
+from sas_to_duckdb import sql, table_exists, require_tables, check, row_count
 
 NAME = "job2"
 DESC = "배분 결과 (SA 변환·집계)"
@@ -204,7 +204,7 @@ def validate(con, yyyymm):
         row_count(con, tbl)
 
     # 전표 vs 배분결과 대사 (차이 0이어야 정상)
-    if table_exists(con, "erp") and table_exists(con, f"sa_{yyyymm}"):
+    if require_tables(con, "erp", f"sa_{yyyymm}"):
         check(con, "전표 vs 배분결과 계정별 차이", f"""
             SELECT COUNT(*) FROM (
                 SELECT NTACC_CD, SUM(S) AS diff FROM (

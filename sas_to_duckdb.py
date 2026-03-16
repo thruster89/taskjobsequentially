@@ -140,6 +140,16 @@ def table_exists(con, name):
     return cnt > 0
 
 
+def require_tables(con, *names):
+    """모든 테이블이 존재하는지 확인. 없는 테이블은 경고 로그 출력."""
+    missing = [n for n in names if not table_exists(con, n)]
+    if missing:
+        for n in missing:
+            log.warning(f"  [--] {_pad(n, 45)}  테이블 없음 — 건너뜀")
+        return False
+    return True
+
+
 def check(con, label, query, expect="zero"):
     """
     검증용 헬퍼. SELECT 결과를 로깅만 하고 테이블은 만들지 않음.
@@ -149,7 +159,13 @@ def check(con, label, query, expect="zero"):
       "nonzero" — 1건 이상이어야 정상 (데이터 존재 확인)
       int       — 정확히 N건이어야 정상
     """
-    row = con.execute(query).fetchone()
+    try:
+        row = con.execute(query).fetchone()
+    except Exception as e:
+        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            return False
+        raise
     cnt = row[0] if row else 0
     if expect == "zero":
         ok = cnt == 0
@@ -171,7 +187,13 @@ def check_sum(con, label, query):
       check_sum(con, "보험료 합계",
                 "SELECT SUM(RP_PRM) AS RP_PRM, SUM(AF_PRM) AS AF_PRM FROM fio841")
     """
-    row = con.execute(query).fetchone()
+    try:
+        row = con.execute(query).fetchone()
+    except Exception as e:
+        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            return
+        raise
     cols = [d[0] for d in con.description]
     if not row:
         log.info(f"  [--] {_pad(label, 45)}  데이터 없음")
@@ -212,7 +234,13 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
         ORDER BY ABS(COALESCE(a.{sum_col}, 0) - COALESCE(b.{sum_col}, 0)) DESC
     """
 
-    rows = con.execute(diff_sql).fetchall()
+    try:
+        rows = con.execute(diff_sql).fetchall()
+    except Exception as e:
+        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            return True
+        raise
     total = len(rows)
     ok = total == 0
     mark = "OK" if ok else "NG"
@@ -455,12 +483,12 @@ def _read_one(name, cfg, base_path, yyyymm):
     ts = time.time()
     if cfg.get("type") == "oracle":
         df = _load_oracle(cfg, name, yyyymm)
-        log.info(f"  [읽기] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [Read] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     else:
         path = _resolve_path(base_path, cfg["file"], yyyymm)
-        log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
+        log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
         df = _load_file(path, cfg, name)
-        log.info(f"  [읽기] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [Read] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     return name, cfg, df
 
 
@@ -496,7 +524,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
         t = cfg.get("timeout", tmo)  # 테이블별 timeout 우선
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
-            log.info(f"  [읽기] {_pad(name, 20)} ← {path.name}")
+            log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
 
             # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
             if t > 0:
@@ -539,7 +567,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                     con.execute(f"DELETE FROM {name}")
                 con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
             con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
-            log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+            log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             loaded.append(name)
         except Exception as e:
             if timer:
@@ -547,10 +575,10 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
             elapsed = time.time() - ts
             # 타임아웃 여부 판별
             if t > 0 and elapsed >= t - 1:
-                log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
+                log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
                 continue
-            log.warning(f"  [읽기] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
+            log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
             try:
                 ts_fb = time.time()
                 # pandas 폴백에도 타임아웃 적용
@@ -574,20 +602,20 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                     df = _pandas_fallback()
 
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                log.info(f"  [읽기] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
+                log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
                 loaded.append(name)
             except TimeoutError:
-                log.error(f"  [읽기] {_pad(name, 20)} 폴백 타임아웃 ({t}초 초과) — 건너뜀")
+                log.error(f"  [Read] {_pad(name, 20)} 폴백 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
             except Exception as e2:
-                log.error(f"  [읽기] {_pad(name, 20)} 폴백도 실패: {e2}")
+                log.error(f"  [Read] {_pad(name, 20)} 폴백도 실패: {e2}")
                 failed.append(name)
 
     # ── 나머지 (sas7bdat, oracle 등): 병렬 읽기 + 순차 적재 ──
     if other_tables:
         results = []
         workers = min(MAX_READ_WORKERS, len(other_tables))
-        log.info(f"  병렬 읽기 시작 (workers={workers}, 테이블={len(other_tables)}개)")
+        log.info(f"  병렬 Read 시작 (workers={workers}, 테이블={len(other_tables)}개)")
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 name: pool.submit(_read_one, name, cfg, base_path, yyyymm)
@@ -599,24 +627,24 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                     result_timeout = t if t > 0 else None
                     results.append(fut.result(timeout=result_timeout))
                 except TimeoutError:
-                    log.error(f"  [읽기] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
+                    log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
                     failed.append(name)
                 except FileNotFoundError:
-                    log.warning(f"  [읽기] {_pad(name, 20)} 파일 없음 — 건너뜀")
+                    log.warning(f"  [Read] {_pad(name, 20)} 파일 없음 — 건너뜀")
                     failed.append(name)
                 except Exception as e:
-                    log.error(f"  [읽기] {_pad(name, 20)} 실패: {e}")
+                    log.error(f"  [Read] {_pad(name, 20)} 실패: {e}")
                     failed.append(name)
 
-        log.info(f"  ── 적재 시작 ({len(results)}개 테이블) ──")
+        log.info(f"  ── Load 시작 ({len(results)}개 테이블) ──")
         for name, cfg, df in results:
             try:
                 ts = time.time()
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                log.info(f"  [적재] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+                log.info(f"  [Load] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
                 loaded.append(name)
             except Exception as e:
-                log.error(f"  [적재] {_pad(name, 20)} 실패: {e}")
+                log.error(f"  [Load] {_pad(name, 20)} 실패: {e}")
                 failed.append(name)
 
     return loaded, failed
@@ -880,13 +908,14 @@ def main():
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py
   python sas_to_duckdb.py --ym 202601 --job jobs/job2.py --skip-load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
+  python sas_to_duckdb.py --ym 202601 202602 --job jobs/job1.py jobs/job2.py  # 월별 순차
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s logic validate
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -t fio841 fio842
         """
     )
-    parser.add_argument("--ym", type=str, default="202601",
-                        help="처리할 년월 (기본: 202601)")
+    parser.add_argument("--ym", type=str, nargs="+", default=["202601"],
+                        help="처리할 년월 (복수 가능, 예: --ym 202601 202602)")
     parser.add_argument("--job", "-j", nargs="+", required=True,
                         help="실행할 JOB 파일 경로 (예: jobs/job1.py)")
     parser.add_argument("--skip-load", action="store_true",
@@ -912,10 +941,10 @@ def main():
             if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
                 h.setLevel(logging.DEBUG)
 
-    yyyymm = args.ym
+    ym_list = args.ym
     db_path = ROOT / "db" / "ifrs4-expense.duckdb"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    log.info(f"대상 월: {yyyymm}")
+    log.info(f"대상 월: {', '.join(ym_list)}")
     log.info(f"DB    : {db_path}")
 
     # JOB 모듈 로드
@@ -927,20 +956,25 @@ def main():
             log.error(str(e))
             return
 
-    # 순차 실행
+    # 순차 실행: ym → job 순서
     con = duckdb.connect(str(db_path))
     try:
         t_total = time.time()
         failed_jobs = []
-        for mod in job_mods:
-            try:
-                run_job(con, mod, yyyymm, skip_load=args.skip_load,
-                        stages=args.stage, only_tables=args.tables,
-                        load_timeout=args.load_timeout)
-            except Exception as e:
-                name = getattr(mod, "NAME", str(mod))
-                log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")
-                failed_jobs.append(name)
+        for yyyymm in ym_list:
+            if len(ym_list) > 1:
+                log.info("═" * 60)
+                log.info(f"▶ 월별 실행 시작: {yyyymm}")
+                log.info("═" * 60)
+            for mod in job_mods:
+                try:
+                    run_job(con, mod, yyyymm, skip_load=args.skip_load,
+                            stages=args.stage, only_tables=args.tables,
+                            load_timeout=args.load_timeout)
+                except Exception as e:
+                    name = getattr(mod, "NAME", str(mod))
+                    log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")
+                    failed_jobs.append(f"{yyyymm}/{name}")
         if failed_jobs:
             log.warning(f"실패한 JOB: {failed_jobs}")
         log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")

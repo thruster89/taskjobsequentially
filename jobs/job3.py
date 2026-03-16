@@ -4,7 +4,7 @@ JOB 3: 마감 검증 (ERP·BS)
 3차 파일 수신 후 실행 (job1, job2 완료 후):
   python sas_to_duckdb.py --ym 202601 --job jobs/job3.py
 """
-from sas_to_duckdb import sql, table_exists, check, row_count
+from sas_to_duckdb import sql, table_exists, require_tables, check, row_count
 
 NAME = "job3"
 DESC = "마감 검증 (ERP·BS)"
@@ -111,21 +111,21 @@ def validate(con, yyyymm):
         row_count(con, tbl)
 
     # bs104 IBNR 담보코드 누락 (0건이어야 정상)
-    if table_exists(con, "bs104"):
+    if require_tables(con, "bs104"):
         check(con, "bs104 IBNR 담보코드 누락", """
             SELECT COUNT(*) FROM bs104
             WHERE IKD_GRPCD = 'LA' AND CVRCD IS NULL
         """, expect="zero")
 
     # bs105 IBNR 담보코드 누락 (0건이어야 정상)
-    if table_exists(con, "bs105"):
+    if require_tables(con, "bs105"):
         check(con, "bs105 IBNR 담보코드 누락", """
             SELECT COUNT(*) FROM bs105
             WHERE IKD_GRPCD = 'LA' AND CLM_CVRCD IS NULL
         """, expect="zero")
 
     # 자동차 TM/CM 비비례 배분 (0건이어야 정상)
-    if table_exists(con, f"sa_{yyyymm}") and table_exists(con, "erp"):
+    if require_tables(con, f"sa_{yyyymm}", "erp"):
         check(con, "자동차 TM/CM 비비례 배분 누락", f"""
             SELECT COUNT(*) FROM sa_{yyyymm}
             WHERE SUBSTR(BZCS_02_DVCD, 1, 1) = 'E'

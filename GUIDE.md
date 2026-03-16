@@ -88,6 +88,15 @@ python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
 
 순서대로 실행됩니다.
 
+### 여러 월 연속 실행
+
+```bash
+python sas_to_duckdb.py --ym 202601 202602 --job jobs/job1.py jobs/job2.py
+```
+
+월별 → JOB 순서로 순차 실행됩니다:
+`202601/job1 → 202601/job2 → 202602/job1 → 202602/job2`
+
 ### 로드 생략 (이미 적재된 데이터로 로직만 재실행)
 
 ```bash
@@ -106,7 +115,7 @@ python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -v
 
 | 옵션 | 단축 | 설명 | 기본값 |
 |------|------|------|--------|
-| `--ym YYYYMM` | | 처리할 년월 | `202601` |
+| `--ym YYYYMM [...]` | | 처리할 년월 (복수 가능) | `202601` |
 | `--job FILE [...]` | `-j` | JOB 파일 경로 (필수) | |
 | `--skip-load` | | LOAD 단계 생략 | OFF |
 | `--verbose` | `-v` | DEBUG 로그 콘솔 출력 | OFF |
@@ -366,13 +375,14 @@ EXPORT_SHEETS = {
 ### JOB 파일에서 사용 가능한 유틸
 
 ```python
-from sas_to_duckdb import sql, table_exists, check, check_sum, check_diff, row_count
+from sas_to_duckdb import sql, table_exists, require_tables, check, check_sum, check_diff, row_count
 ```
 
 | 함수 | 용도 | 사용 단계 |
 |------|------|-----------|
 | `sql(con, label, query)` | SQL 실행 + CREATE TABLE이면 건수 로깅 | logic |
 | `table_exists(con, name)` | 테이블 존재 여부 확인 | logic / validate |
+| `require_tables(con, *names)` | 여러 테이블 존재 확인 + 없으면 경고 로그 | validate |
 | `row_count(con, table, group_by, where)` | 테이블 건수 로깅 (조건부/그룹별) | validate |
 | `check(con, label, query, expect)` | 건수 검증 (0건/N건/1건 이상) | validate |
 | `check_sum(con, label, query)` | 합계값 표시 (여러 컬럼 지원) | validate |
@@ -409,10 +419,11 @@ def validate(con, yyyymm):
               "SELECT SUM(RP_PRM) AS RP_PRM, SUM(AF_PRM) AS AF_PRM FROM fio841")
 
     # 두 테이블 차이 비교 (group_cols 기준 FULL OUTER JOIN)
-    check_diff(con, "전표 vs 배분",
-               "SELECT DVCD, SUM(AMT) AS AMT FROM slp GROUP BY DVCD",
-               "SELECT DVCD, SUM(AMT) AS AMT FROM sa  GROUP BY DVCD",
-               group_cols=["DVCD"], sum_col="AMT")
+    if require_tables(con, "slp", "sa"):  # 테이블 없으면 경고 로그 후 건너뜀
+        check_diff(con, "전표 vs 배분",
+                   "SELECT DVCD, SUM(AMT) AS AMT FROM slp GROUP BY DVCD",
+                   "SELECT DVCD, SUM(AMT) AS AMT FROM sa  GROUP BY DVCD",
+                   group_cols=["DVCD"], sum_col="AMT")
 ```
 
 #### check 함수 expect 옵션
