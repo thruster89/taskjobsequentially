@@ -214,6 +214,14 @@ TABLES = {                          # 테이블 정의 (필수)
         "desc": "Oracle에서 추출",
         "month_col": None,          # 전체 교체
     },
+
+    # ── 유형D-2: Oracle DB (SQL 파일) ──
+    "ora_table2": {
+        "type": "oracle",
+        **ORA_DEV,
+        "sql_file": "sql/ora_extract.sql",   # ← SQL 파일 경로
+        "desc": "Oracle에서 SQL 파일로 추출",
+    },
 }
 
 EXPORT_SHEETS = {                   # 시트맵 (선택)
@@ -339,7 +347,7 @@ EXPORT_SHEETS = {
 | 고정폭 | `fwf` | `cols` (바이트 위치) | DAT 파일 고정폭 파싱 |
 | 파이프 구분자 | `pipe` | `cols` (컬럼명 리스트) | `\|` 구분 DAT 파일 |
 | SAS 데이터셋 | `sas7bdat` | — | pyreadstat로 읽기 |
-| Oracle DB | `oracle` | `sql`, `dsn` | Oracle에서 SQL로 추출 |
+| Oracle DB | `oracle` | `sql` 또는 `sql_file`, `dsn` | Oracle에서 SQL로 추출 |
 
 #### FWF native 옵션
 

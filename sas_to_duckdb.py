@@ -366,7 +366,10 @@ def _load_oracle(cfg, name, yyyymm):
     dsn = _make_oracle_dsn(cfg)
     user = cfg.get("user", "")
     password = cfg.get("password", "")
-    sql_text = cfg["sql"].replace("{yyyymm}", yyyymm)
+    if "sql_file" in cfg:
+        sql_text = Path(cfg["sql_file"]).read_text(encoding="utf-8").format(yyyymm=yyyymm)
+    else:
+        sql_text = cfg["sql"].replace("{yyyymm}", yyyymm)
 
     log.info(f"  [Oracle] {_pad(name, 20)} ← {dsn}")
     log.debug(f"  [Oracle] SQL: {sql_text[:120]}...")
