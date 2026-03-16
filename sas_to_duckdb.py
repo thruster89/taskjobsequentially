@@ -634,9 +634,12 @@ def _build_export_query(tbl, cfg, yyyymm=None):
              → columns + where 조합도 가능
     """
     if isinstance(cfg, str):
-        return f"SELECT * FROM {tbl}", cfg
+        sheet = cfg.replace("{yyyymm}", yyyymm) if yyyymm else cfg
+        return f"SELECT * FROM {tbl}", sheet
 
     sheet = cfg.get("sheet", tbl)
+    if yyyymm:
+        sheet = sheet.replace("{yyyymm}", yyyymm)
 
     # sql이 있으면 그대로 사용 (columns/where 무시)
     if "sql" in cfg:
