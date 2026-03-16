@@ -634,27 +634,30 @@ def _build_export_query(tbl, cfg, yyyymm=None):
              → columns + where 조합도 가능
     """
     if isinstance(cfg, str):
-        return f"SELECT * FROM {tbl}", cfg
+        sheet = cfg.replace("{yyyymm}", yyyymm) if yyyymm else cfg
+        return f"SELECT * FROM {tbl}", sheet
 
     sheet = cfg.get("sheet", tbl)
+    if yyyymm:
+        sheet = sheet.replace("{yyyymm}", yyyymm)
 
     # sql이 있으면 그대로 사용 (columns/where 무시)
     if "sql" in cfg:
-        sql = cfg["sql"].replace("{yyyymm}", yyyymm) if yyyymm else cfg["sql"]
-        return sql, sheet
+        query = cfg["sql"].replace("{yyyymm}", yyyymm) if yyyymm else cfg["sql"]
+        return query, sheet
 
     cols = ", ".join(cfg["columns"]) if "columns" in cfg else "*"
-    sql = f"SELECT {cols} FROM {tbl}"
+    query = f"SELECT {cols} FROM {tbl}"
     if "where" in cfg:
-        sql += f" WHERE {cfg['where']}"
+        query += f" WHERE {cfg['where']}"
     if "order_by" in cfg:
-        sql += f" ORDER BY {cfg['order_by']}"
+        query += f" ORDER BY {cfg['order_by']}"
     if "limit" in cfg:
-        sql += f" LIMIT {cfg['limit']}"
+        query += f" LIMIT {cfg['limit']}"
 
     if yyyymm:
-        sql = sql.replace("{yyyymm}", yyyymm)
-    return sql, sheet
+        query = query.replace("{yyyymm}", yyyymm)
+    return query, sheet
 
 
 def _next_output_path(out_dir, job_name, yyyymm):
@@ -700,6 +703,9 @@ def do_export(con, yyyymm, job_name, sheet_map):
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = _next_output_path(out_dir, job_name, yyyymm)
 
+    # 테이블 키의 {yyyymm} 플레이스홀더를 실제 월로 치환
+    sheet_map = {k.replace("{yyyymm}", yyyymm): v for k, v in sheet_map.items()}
+
     # out_ 접두사 테이블 자동 추가
     db_tables = [r[0] for r in con.execute(
         "SELECT table_name FROM information_schema.tables "
@@ -732,7 +738,8 @@ def do_export(con, yyyymm, job_name, sheet_map):
                     summary.append((tbl, sname, len(df), el))
                     log.info(f"    {_pad(sname, 25)}  {len(df):>10,}건  ({el:.1f}초)")
                 except Exception as e:
-                    log.warning(f"    {sheet if isinstance(single_cfg, str) else single_cfg.get('sheet', tbl)} 건너뜀: {e}")
+                    err_sheet = (single_cfg if isinstance(single_cfg, str) else single_cfg.get("sheet", tbl)).replace("{yyyymm}", yyyymm)
+                    log.warning(f"    {err_sheet} 건너뜀: {e}")
 
         _write_summary_sheet(writer, yyyymm, summary)
 
