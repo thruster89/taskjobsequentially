@@ -838,22 +838,31 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
 
     # 2. LOGIC
     if run_all or "logic" in stages:
-        log.info(f"[{name}] LOGIC")
-        job_mod.logic(con, yyyymm)
+        try:
+            log.info(f"[{name}] LOGIC")
+            job_mod.logic(con, yyyymm)
+        except Exception as e:
+            log.error(f"[{name}] LOGIC 실패 — 다음 단계로 계속 진행: {e}")
 
     # 3. VALIDATE
     if run_all or "validate" in stages:
-        log.info("─" * 60)
-        log.info(f"[{name}] VALIDATE")
-        job_mod.validate(con, yyyymm)
-        log.info("─" * 60)
+        try:
+            log.info("─" * 60)
+            log.info(f"[{name}] VALIDATE")
+            job_mod.validate(con, yyyymm)
+            log.info("─" * 60)
+        except Exception as e:
+            log.error(f"[{name}] VALIDATE 실패 — 다음 단계로 계속 진행: {e}")
 
     # 4. EXPORT
     if run_all or "export" in stages:
-        sheets = dict(getattr(job_mod, "EXPORT_SHEETS", {}))
-        if sheets:
-            log.info(f"[{name}] EXPORT")
-            do_export(con, yyyymm, name, sheets)
+        try:
+            sheets = dict(getattr(job_mod, "EXPORT_SHEETS", {}))
+            if sheets:
+                log.info(f"[{name}] EXPORT")
+                do_export(con, yyyymm, name, sheets)
+        except Exception as e:
+            log.error(f"[{name}] EXPORT 실패: {e}")
 
     log.info(f"[{name}] 완료  소요: {time.time()-t0:.1f}초")
 
