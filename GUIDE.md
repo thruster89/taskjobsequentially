@@ -375,12 +375,13 @@ EXPORT_SHEETS = {
 ### JOB 파일에서 사용 가능한 유틸
 
 ```python
-from sas_to_duckdb import sql, table_exists, require_tables, check, check_sum, check_diff, row_count
+from sas_to_duckdb import sql, sql_file, table_exists, require_tables, check, check_sum, check_diff, row_count
 ```
 
 | 함수 | 용도 | 사용 단계 |
 |------|------|-----------|
 | `sql(con, label, query)` | SQL 실행 + CREATE TABLE이면 건수 로깅 | logic |
+| `sql_file(con, label, path, **params)` | SQL 파일 읽어서 실행 (`{yyyymm}` 등 치환) | logic |
 | `table_exists(con, name)` | 테이블 존재 여부 확인 | logic / validate |
 | `require_tables(con, *names)` | 여러 테이블 존재 확인 + 없으면 경고 로그 | validate |
 | `row_count(con, table, group_by, where)` | 테이블 건수 로깅 (조건부/그룹별) | validate |
@@ -396,6 +397,9 @@ def logic(con, yyyymm):
         CREATE OR REPLACE TABLE result AS
         SELECT ... FROM my_table
     """)
+
+    # SQL 파일에서 읽기 (긴 쿼리 분리 시 유용)
+    sql_file(con, "SA 변환", "sql/job2_sa_convert.sql", yyyymm=yyyymm)
 
 def validate(con, yyyymm):
     # 건수 확인

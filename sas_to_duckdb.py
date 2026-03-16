@@ -118,6 +118,12 @@ def sql(con, label, query, params=None):
         log.info(f"  {_pad(label, 50)}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
 
 
+def sql_file(con, label, path, **params):
+    """SQL 파일 읽어서 실행. {yyyymm} 등 파라미터 치환."""
+    query = Path(path).read_text(encoding="utf-8").format(**params)
+    return sql(con, label, query)
+
+
 def prev_ym(yyyymm, n=1):
     """YYYYMM 기준 n개월 전 YYYYMM 문자열 반환 (기본 1개월 전)"""
     y, m = int(yyyymm[:4]), int(yyyymm[4:])
