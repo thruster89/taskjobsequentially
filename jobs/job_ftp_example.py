@@ -36,6 +36,7 @@ def download_ftp(cfg, yyyymm, patterns=None):
     local_dir.mkdir(parents=True, exist_ok=True)
 
     with FTP() as ftp:
+        ftp.encoding = cfg.get("encoding", "utf-8")
         ftp.connect(cfg["host"], cfg.get("port", 21))
         ftp.login(cfg["user"], cfg["password"])
         ftp.cwd(cfg.get("remote_dir", "/"))

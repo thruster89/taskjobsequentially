@@ -18,4 +18,5 @@ FTP_IFRS4 = {
     "user": "D030060",
     "password": "비밀번호",
     "remote_dir": "/IFRS4/",
+    "encoding": "cp949",        # FTP 서버 인코딩 (한글 파일명)
 }
