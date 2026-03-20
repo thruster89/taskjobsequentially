@@ -1124,8 +1124,16 @@ def main():
 
     # 순차 실행: ym → job 순서
     con = duckdb.connect(str(db_path))
-    # 대용량 gz 파일 OOM 방지: 메모리 제한 + 디스크 스필 활성화
-    con.execute("SET memory_limit = '4GB'")
+    # 시스템 RAM 75%를 DuckDB에 할당 (디스크 스필 최소화)
+    try:
+        total_ram = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+        mem_limit = int(total_ram * 0.75) // (1024 ** 3)
+        mem_limit = max(mem_limit, 4)  # 최소 4GB
+        con.execute(f"SET memory_limit = '{mem_limit}GB'")
+        log.info(f"DuckDB memory_limit = {mem_limit}GB (시스템 RAM {total_ram // (1024**3)}GB의 75%)")
+    except Exception:
+        con.execute("SET memory_limit = '4GB'")
+        log.info("DuckDB memory_limit = 4GB (폴백)")
     con.execute("SET temp_directory = 'duckdb_tmp'")
     try:
         t_total = time.time()
