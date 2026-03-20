@@ -86,6 +86,7 @@ except ImportError:
 ROOT = Path(__file__).parent
 MAX_READ_WORKERS = 4
 LOAD_TIMEOUT = 300          # 테이블당 최대 읽기 시간 (초), 0이면 무제한
+DB_FILE = "ifrs4-expense.duckdb"   # 출력 DuckDB 파일명
 ENCODINGS = ["cp949", "utf-8"]
 FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
 
@@ -1011,7 +1012,7 @@ def main():
         job_paths.extend(str(f) for f in found)
 
     ym_list = args.ym
-    db_path = ROOT / "db" / "ifrs4-expense.duckdb"
+    db_path = ROOT / "db" / DB_FILE
     db_path.parent.mkdir(parents=True, exist_ok=True)
     log.info(f"대상 월: {', '.join(ym_list)}")
     log.info(f"DB    : {db_path}")
