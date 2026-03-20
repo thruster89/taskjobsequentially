@@ -12,6 +12,8 @@ dat_loader.py
 """
 
 import gzip
+import shutil
+import tempfile
 import zipfile
 import json
 import argparse
@@ -166,6 +168,35 @@ def open_file_binary(path: Path):
         return open(path, "rb")
 
 
+def decompress_gz(path: Path):
+    """
+    .gz 파일을 같은 디렉토리에 해제하여 .dat 파일로 반환.
+    이미 해제된 파일이 있고 gz보다 새로우면 스킵.
+    gz가 아니면 원본 경로 그대로 반환.
+    """
+    if path.suffix.lower() != ".gz":
+        return path, False
+
+    # .dat.gz → .dat, .gz → 확장자 제거
+    if path.name.lower().endswith(".dat.gz"):
+        out = path.with_name(path.name[:-3])  # .dat.gz → .dat
+    else:
+        out = path.with_suffix("")  # .gz → 제거
+
+    # 이미 해제된 파일이 gz보다 새로우면 스킵
+    if out.exists() and out.stat().st_mtime >= path.stat().st_mtime:
+        log.info(f"    gz 이미 해제됨: {out.name} ({out.stat().st_size / 1024**2:.0f}MB)")
+        return out, False
+
+    log.info(f"    gz 해제 시작: {path.name}")
+    t0 = time.time()
+    with gzip.open(path, "rb") as fin, open(out, "wb") as fout:
+        shutil.copyfileobj(fin, fout, length=16 * 1024 * 1024)  # 16MB 버퍼
+    sz = out.stat().st_size / 1024 ** 2
+    log.info(f"    gz 해제 완료: {out.name} ({sz:.0f}MB, {time.time()-t0:.1f}초)")
+    return out, True
+
+
 # ══════════════════════════════════════════════
 # 인코딩 자동 감지 래퍼
 # ══════════════════════════════════════════════
@@ -284,6 +315,9 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
+    # 0단계: gz → dat 해제 (DuckDB 멀티스레드 파싱 활성화)
+    path, _ = decompress_gz(path)
+
     # 1단계: 샘플로 인코딩 감지
     t0 = time.time()
     enc = _detect_duckdb_encoding(con, path, enc_list)
@@ -396,6 +430,9 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     """
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
+
+    # 0단계: gz → dat 해제 (DuckDB 멀티스레드 파싱 활성화)
+    path, _ = decompress_gz(path)
 
     # 1단계: 샘플로 인코딩 감지
     t0 = time.time()
