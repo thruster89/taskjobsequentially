@@ -33,8 +33,8 @@ except ImportError:
 # 인코딩 fallback 순서
 ENCODINGS = ["cp949", "utf-8"]
 # DuckDB 네이티브 읽기용 인코딩 순서
-# DuckDB는 cp949를 직접 지원하지 않으므로 euc-kr(=euc_kr)도 시도
-DUCKDB_ENCODINGS = ["utf-8", "euc_kr", "cp949"]
+# encodings 확장 설치 시 cp949 직접 지원, 없으면 euc_kr 폴백
+DUCKDB_ENCODINGS = ["utf-8", "cp949", "euc_kr"]
 
 
 # charset_normalizer 결과 → DuckDB 호환 인코딩 매핑
@@ -486,11 +486,14 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # 0단계: gz 해제 + cp949→utf-8 변환 (DuckDB 멀티스레드 + 네이티브 인코딩)
-    path = decompress_gz(path)
-    enc = "utf-8"  # decompress_gz가 utf-8로 변환 완료
+    # DuckDB는 .gz를 네이티브로 읽고 euc_kr도 기본 지원 → decompress_gz 불필요
 
-    # 1단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
+    # 1단계: 인코딩 감지
+    t0 = time.time()
+    enc = _detect_duckdb_encoding(con, path, enc_list)
+    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
+
+    # 2단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
     t1 = time.time()
     n_cols = len(col_names)
 

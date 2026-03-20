@@ -1164,7 +1164,11 @@ def main():
         con.execute("SET memory_limit = '4GB'")
         log.info("DuckDB memory_limit = 4GB (RAM 감지 실패, 폴백)")
     con.execute("SET temp_directory = 'duckdb_tmp'")
-    # cp949→utf-8 변환은 decompress_gz에서 처리하므로 DuckDB encodings 확장 불필요
+    try:
+        con.execute("LOAD encodings")
+        log.info("DuckDB encodings 확장 로드 (cp949 직접 지원)")
+    except Exception:
+        log.info("DuckDB encodings 확장 없음 — euc_kr 폴백 사용")
     try:
         t_total = time.time()
         failed_jobs = []
