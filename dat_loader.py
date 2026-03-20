@@ -486,11 +486,14 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # 0단계: gz 해제 + cp949→utf-8 변환 (DuckDB 멀티스레드 + 네이티브 인코딩)
-    path = decompress_gz(path)
-    enc = "utf-8"  # decompress_gz가 utf-8로 변환 완료
+    # DuckDB는 .gz를 네이티브로 읽고 euc_kr도 기본 지원 → decompress_gz 불필요
 
-    # 1단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
+    # 1단계: 인코딩 감지
+    t0 = time.time()
+    enc = _detect_duckdb_encoding(con, path, enc_list)
+    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
+
+    # 2단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
     t1 = time.time()
     n_cols = len(col_names)
 
