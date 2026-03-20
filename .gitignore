@@ -1,3 +1,4 @@
 __pycache__/
 logs/
 oracle_config.py
+ftp_config.py
