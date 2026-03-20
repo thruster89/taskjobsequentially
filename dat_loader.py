@@ -526,10 +526,12 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _pipe_raw AS
                 SELECT * FROM read_csv('{path}',
-                    delim      = '{delimiter}',
-                    header     = false,
-                    encoding   = '{try_enc}',
-                    columns    = {{{col_map}}})
+                    delim        = '{delimiter}',
+                    header       = false,
+                    encoding     = '{try_enc}',
+                    null_padding = true,
+                    strict_mode  = false,
+                    columns      = {{{col_map}}})
             """)
             if try_enc != enc:
                 log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
@@ -680,10 +682,12 @@ def read_csv_duckdb(
                 con.execute(f"""
                     CREATE OR REPLACE TEMP TABLE _csv_parsed AS
                     SELECT * FROM read_csv('{path}',
-                        delim    = '{delimiter}',
-                        header   = {hdr},
-                        encoding = '{try_enc}',
-                        columns  = {{{col_map}}})
+                        delim        = '{delimiter}',
+                        header       = {hdr},
+                        encoding     = '{try_enc}',
+                        null_padding = true,
+                        strict_mode  = false,
+                        columns      = {{{col_map}}})
                 """)
             else:
                 con.execute(f"""
