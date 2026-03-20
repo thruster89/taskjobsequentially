@@ -236,6 +236,23 @@ TABLES = {                          # 테이블 정의 (필수)
         "numeric": ["AMT"],         # 대부분 자동 감지, 추가 캐스팅 필요 시 지정
         # cols 불필요 — sas7bdat는 파일 내 컬럼 메타데이터 사용
     },
+    # ── 유형E: 파일명에 날짜가 붙는 경우 (glob 패턴) ──
+    # btLtrJ930_020_20260228_20260308.dat.gz 처럼 날짜가 변하는 파일
+    "bt930_020": {
+        "type": "pipe",
+        "file": "btLtrJ930_020_{yyyymm}*_*.dat.gz",   # ← * 와일드카드 사용
+        "desc": "930_020 (all 제외)",
+        "month_col": None,
+        "cols": ["COL1", "COL2", "COL3"],
+    },
+    "bt930_020_all": {
+        "type": "pipe",
+        "file": "btLtrJ930_020_all_{yyyymm}*_*.dat.gz",  # ← _all 포함
+        "desc": "930_020 전체(all)",
+        "month_col": None,
+        "cols": ["COL1", "COL2", "COL3"],
+    },
+
     # ── 유형D: Oracle DB ──
     # 접속정보는 oracle_config.py에서 관리
     "ora_table": {

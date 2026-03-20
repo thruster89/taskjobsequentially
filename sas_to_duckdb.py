@@ -306,8 +306,30 @@ def row_count(con, table, group_by=None, where=None):
 
 
 def _resolve_path(base, file_template, yyyymm):
-    """파일 확장자 순서대로 탐색"""
-    stem = Path(file_template.format(yyyymm=yyyymm)).stem
+    """파일 확장자 순서대로 탐색. glob 와일드카드(*, ?) 지원."""
+    rendered = file_template.format(yyyymm=yyyymm)
+    is_glob = "*" in rendered or "?" in rendered
+
+    if is_glob:
+        # glob 패턴: 확장자 포함 여부에 따라 처리
+        has_ext = any(rendered.lower().endswith(ext) for ext in FILE_EXTENSIONS)
+        if has_ext:
+            # 확장자 명시: "btLtrJ930_020_{yyyymm}_*.dat.gz"
+            matches = sorted(base.glob(rendered))
+        else:
+            # 확장자 미명시: 모든 확장자 시도
+            matches = []
+            for ext in FILE_EXTENSIONS:
+                matches.extend(sorted(base.glob(f"{rendered}{ext}")))
+        if not matches:
+            raise FileNotFoundError(f"패턴 매칭 실패: {rendered} (위치: {base})")
+        if len(matches) > 1:
+            names = [m.name for m in matches]
+            log.warning(f"  [glob] {rendered} → {len(matches)}개 매칭, 최신 파일 사용: {names}")
+        return matches[-1]  # 정렬 후 마지막 = 이름순 최신
+
+    # 정확한 파일명
+    stem = Path(rendered).stem
     if stem.lower().endswith(".dat"):
         stem = stem[:-4]
     for ext in FILE_EXTENSIONS:
