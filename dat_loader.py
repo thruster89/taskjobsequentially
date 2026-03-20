@@ -42,6 +42,14 @@ DUCKDB_ENCODINGS = ["utf-8", "cp949", "euc_kr"]
 _ENC_MAP = {
     "euc-kr": "euc_kr", "euckr": "euc_kr", "cp949": "euc_kr",
     "big5": "euc_kr", "big5hkscs": "euc_kr",   # 한국어 오탐 보정
+    # latin1(iso-8859-1)은 0x00-0xFF 모든 바이트를 허용하므로
+    # charset_normalizer가 "판별 불가"일 때 latin1을 반환하는 경우가 많음.
+    # 한국어 파일에서는 거의 항상 cp949/euc_kr이므로 euc_kr로 매핑하여
+    # DuckDB 폴백(파일 다중 읽기) 병목을 방지한다.
+    "latin-1": "euc_kr", "latin1": "euc_kr",
+    "iso-8859-1": "euc_kr", "iso88591": "euc_kr",
+    "windows-1252": "euc_kr", "windows1252": "euc_kr",
+    "cp1252": "euc_kr",
     "utf-8": "utf-8", "ascii": "utf-8", "utf8": "utf-8",
 }
 
@@ -90,7 +98,7 @@ def _detect_duckdb_encoding(con, path, enc_list=None):
             if enc.lower().replace("-", "_") == normalized:
                 log.info(f"    인코딩 자동감지: {raw_name} → {enc}")
                 return enc
-        log.info(f"    인코딩 자동감지 결과({raw_name})가 DuckDB 미지원 → DuckDB 폴백 감지")
+        log.info(f"    인코딩 자동감지 결과({raw_name} → {detected})가 DuckDB 미지원 → DuckDB 폴백 감지")
     except Exception as e:
         log.info(f"    인코딩 자동감지 실패({e}) → DuckDB 폴백 감지")
 
