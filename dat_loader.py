@@ -231,10 +231,11 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
     # 1단계: 샘플로 인코딩 감지
     t0 = time.time()
     enc = _detect_duckdb_encoding(con, path, enc_list)
-    log.debug(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
+    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
     # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
     t1 = time.time()
+    log.info(f"    전체 읽기 시작 (FWF, enc={enc})")
     remaining = [e for e in enc_list if e != enc]
     for try_enc in [enc] + remaining:
         try:
@@ -253,12 +254,13 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
         except Exception as e:
             if try_enc == remaining[-1] if remaining else try_enc == enc:
                 raise
-            log.debug(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
+            log.info(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
             continue
-    log.debug(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
+    log.info(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
 
     # 3단계: SUBSTR로 컬럼 추출 (SQL 1-based → start+1)
     t2 = time.time()
+    log.info(f"    컬럼 파싱 시작 (FWF, {len(col_defs)}개 컬럼)")
     exprs = []
     for (start, end), name in col_defs:
         width = end - start
@@ -273,7 +275,7 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
     """)
     cnt = con.execute("SELECT COUNT(*) FROM _fwf_parsed").fetchone()[0]
     con.execute("DROP TABLE IF EXISTS _fwf_raw")
-    log.debug(f"    컬럼 파싱 완료  {cnt:,}건  ({time.time()-t2:.1f}초)")
+    log.info(f"    컬럼 파싱 완료  {cnt:,}건  ({time.time()-t2:.1f}초)")
     return cnt
 
 
@@ -342,10 +344,11 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     # 1단계: 샘플로 인코딩 감지
     t0 = time.time()
     enc = _detect_duckdb_encoding(con, path, enc_list)
-    log.debug(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
+    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
     # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
     t1 = time.time()
+    log.info(f"    전체 읽기 시작 (PIPE, enc={enc})")
     remaining = [e for e in enc_list if e != enc]
     for try_enc in [enc] + remaining:
         try:
@@ -364,12 +367,13 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         except Exception as e:
             if try_enc == remaining[-1] if remaining else try_enc == enc:
                 raise
-            log.debug(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
+            log.info(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
             continue
-    log.debug(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
+    log.info(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
 
     # 3단계: string_split으로 컬럼 추출 (1-based index)
     t2 = time.time()
+    log.info(f"    컬럼 파싱 시작 (PIPE, {len(col_names)}개 컬럼)")
     exprs = []
     for i, name in enumerate(col_names):
         base = f"TRIM(string_split(line, '{delimiter}')[{i + 1}])"
@@ -383,7 +387,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     """)
     cnt = con.execute("SELECT COUNT(*) FROM _pipe_parsed").fetchone()[0]
     con.execute("DROP TABLE IF EXISTS _pipe_raw")
-    log.debug(f"    컬럼 파싱 완료  {cnt:,}건  ({time.time()-t2:.1f}초)")
+    log.info(f"    컬럼 파싱 완료  {cnt:,}건  ({time.time()-t2:.1f}초)")
     return cnt
 
 
@@ -489,10 +493,11 @@ def read_csv_duckdb(
     # 1단계: 샘플로 인코딩 감지
     t0 = time.time()
     enc = _detect_duckdb_encoding(con, path, enc_list)
-    log.debug(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
+    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
     # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
     t1 = time.time()
+    log.info(f"    전체 읽기 시작 (CSV, enc={enc})")
     remaining = [e for e in enc_list if e != enc]
     for try_enc in [enc] + remaining:
         try:
@@ -524,9 +529,9 @@ def read_csv_duckdb(
         except Exception as e:
             if try_enc == remaining[-1] if remaining else try_enc == enc:
                 raise
-            log.debug(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
+            log.info(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
             continue
-    log.debug(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
+    log.info(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
 
     # numeric 캐스팅 (col_names 없는 경우)
     if not col_names and numeric_set:
@@ -546,7 +551,7 @@ def read_csv_duckdb(
         """)
 
     cnt = con.execute("SELECT COUNT(*) FROM _csv_parsed").fetchone()[0]
-    log.debug(f"    CSV 파싱 완료  {cnt:,}건  ({time.time()-t1:.1f}초)")
+    log.info(f"    CSV 파싱 완료  {cnt:,}건  ({time.time()-t1:.1f}초)")
     return cnt
 
 
