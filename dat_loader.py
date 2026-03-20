@@ -170,31 +170,60 @@ def open_file_binary(path: Path):
 
 def decompress_gz(path: Path):
     """
-    .gz 파일을 같은 디렉토리에 해제하여 .dat 파일로 반환.
-    이미 해제된 파일이 있고 gz보다 새로우면 스킵.
-    gz가 아니면 원본 경로 그대로 반환.
+    .gz 파일을 해제 + cp949→utf-8 변환하여 .utf8.dat 로 반환.
+    DuckDB encodings 확장 없이 utf-8 네이티브로 읽을 수 있게 함.
+    이미 변환된 파일이 gz보다 새로우면 스킵.
+    gz가 아닌 비-utf8 파일도 변환 대상.
     """
-    if path.suffix.lower() != ".gz":
-        return path, False
-
-    # .dat.gz → .dat, .gz → 확장자 제거
-    if path.name.lower().endswith(".dat.gz"):
-        out = path.with_name(path.name[:-3])  # .dat.gz → .dat
+    # 출력 파일명 결정
+    if path.suffix.lower() == ".gz":
+        if path.name.lower().endswith(".dat.gz"):
+            base = path.with_name(path.name[:-3])  # .dat.gz → .dat
+        else:
+            base = path.with_suffix("")
     else:
-        out = path.with_suffix("")  # .gz → 제거
+        base = path
+    out = base.with_suffix(".utf8.dat")
 
-    # 이미 해제된 파일이 gz보다 새로우면 스킵
+    # 이미 변환된 파일이 원본보다 새로우면 스킵
     if out.exists() and out.stat().st_mtime >= path.stat().st_mtime:
-        log.info(f"    gz 이미 해제됨: {out.name} ({out.stat().st_size / 1024**2:.0f}MB)")
-        return out, False
+        log.info(f"    변환 캐시 사용: {out.name} ({out.stat().st_size / 1024**2:.0f}MB)")
+        return out
 
-    log.info(f"    gz 해제 시작: {path.name}")
+    # 인코딩 감지
+    detected, raw_name = _detect_file_encoding(path)
+    # DuckDB 네이티브 utf-8이면 gz 해제만
+    is_utf8 = detected.lower().replace("-", "").replace("_", "") in ("utf8", "ascii")
+
+    log.info(f"    gz 해제 + 인코딩 변환 시작: {path.name} ({raw_name} → utf-8)")
     t0 = time.time()
-    with gzip.open(path, "rb") as fin, open(out, "wb") as fout:
-        shutil.copyfileobj(fin, fout, length=16 * 1024 * 1024)  # 16MB 버퍼
+
+    if path.suffix.lower() == ".gz":
+        fin_raw = gzip.open(path, "rb")
+    else:
+        fin_raw = open(path, "rb")
+
+    try:
+        if is_utf8:
+            # utf-8이면 바이너리 복사만
+            with open(out, "wb") as fout:
+                shutil.copyfileobj(fin_raw, fout, length=16 * 1024 * 1024)
+        else:
+            # cp949/euc-kr → utf-8 변환
+            src_enc = "cp949"  # euc_kr 상위호환
+            buf_size = 16 * 1024 * 1024
+            with open(out, "wb") as fout:
+                while True:
+                    chunk = fin_raw.read(buf_size)
+                    if not chunk:
+                        break
+                    fout.write(chunk.decode(src_enc, errors="replace").encode("utf-8"))
+    finally:
+        fin_raw.close()
+
     sz = out.stat().st_size / 1024 ** 2
-    log.info(f"    gz 해제 완료: {out.name} ({sz:.0f}MB, {time.time()-t0:.1f}초)")
-    return out, True
+    log.info(f"    변환 완료: {out.name} ({sz:.0f}MB, {time.time()-t0:.1f}초)")
+    return out
 
 
 # ══════════════════════════════════════════════
@@ -315,19 +344,15 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # 0단계: gz → dat 해제 (DuckDB 멀티스레드 파싱 활성화)
-    path, _ = decompress_gz(path)
+    # 0단계: gz 해제 + cp949→utf-8 변환 (DuckDB 멀티스레드 + 네이티브 인코딩)
+    path = decompress_gz(path)
+    enc = "utf-8"  # decompress_gz가 utf-8로 변환 완료
 
-    # 1단계: 샘플로 인코딩 감지
-    t0 = time.time()
-    enc = _detect_duckdb_encoding(con, path, enc_list)
-    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
-
-    # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
+    # 1단계: 전체 파일 읽기
     t1 = time.time()
     log.info(f"    전체 읽기 시작 (FWF, enc={enc})")
-    remaining = [e for e in enc_list if e != enc]
-    for try_enc in [enc] + remaining:
+    remaining = []
+    for try_enc in [enc]:
         try:
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _fwf_raw AS
@@ -431,15 +456,11 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # 0단계: gz → dat 해제 (DuckDB 멀티스레드 파싱 활성화)
-    path, _ = decompress_gz(path)
+    # 0단계: gz 해제 + cp949→utf-8 변환 (DuckDB 멀티스레드 + 네이티브 인코딩)
+    path = decompress_gz(path)
+    enc = "utf-8"  # decompress_gz가 utf-8로 변환 완료
 
-    # 1단계: 샘플로 인코딩 감지
-    t0 = time.time()
-    enc = _detect_duckdb_encoding(con, path, enc_list)
-    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
-
-    # 2단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
+    # 1단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
     t1 = time.time()
     n_cols = len(col_names)
 
