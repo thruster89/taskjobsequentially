@@ -77,6 +77,7 @@ def download_ftp(cfg, yyyymm, patterns=None, excludes=None):
 
 def prejob(yyyymm):
     """LOAD 전에 FTP에서 필요한 파일만 다운로드"""
+    log.info(f"  [FTP] config: host={FTP_IFRS4.get('host')}, port={FTP_IFRS4.get('port')}")
     download_ftp(FTP_IFRS4, yyyymm, patterns=[
         "btLtrJ930_020_",       # 930_020 파일
         # "RS100_",             # 필요한 패턴 추가
