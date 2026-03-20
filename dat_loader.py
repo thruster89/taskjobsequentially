@@ -36,8 +36,10 @@ DUCKDB_ENCODINGS = ["utf-8", "euc_kr", "cp949"]
 
 
 # charset_normalizer 결과 → DuckDB 호환 인코딩 매핑
+# Big5(중국어 번체)는 cp949와 바이트 범위가 겹쳐서 한국어 파일을 오탐하는 경우가 많음
 _ENC_MAP = {
     "euc-kr": "euc_kr", "euckr": "euc_kr", "cp949": "euc_kr",
+    "big5": "euc_kr", "big5hkscs": "euc_kr",   # 한국어 오탐 보정
     "utf-8": "utf-8", "ascii": "utf-8", "utf8": "utf-8",
 }
 
@@ -400,20 +402,25 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     enc = _detect_duckdb_encoding(con, path, enc_list)
     log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
-    # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
+    # 2단계: read_csv로 파이프 구분자 직접 파싱 (C++ 엔진, 1-pass)
+    # 기존 string_split 2-pass 방식 대비 대폭 빠름
     t1 = time.time()
-    log.info(f"    전체 읽기 시작 (PIPE, enc={enc})")
+    n_cols = len(col_names)
+    # DuckDB columns 맵: 정의된 컬럼만 VARCHAR로 읽고, 초과분은 무시됨
+    col_map = ", ".join(f"column{i:02d}: 'VARCHAR'" for i in range(n_cols))
+    log.info(f"    전체 읽기 시작 (PIPE direct, enc={enc}, {n_cols}개 컬럼)")
+
     remaining = [e for e in enc_list if e != enc]
     for try_enc in [enc] + remaining:
         try:
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE _pipe_raw AS
-                SELECT column0 AS line
-                FROM read_csv('{path}',
-                    delim      = '\x01',
+                SELECT * FROM read_csv('{path}',
+                    delim      = '{delimiter}',
                     header     = false,
                     encoding   = '{try_enc}',
-                    columns    = {{'column0': 'VARCHAR'}})
+                    columns    = {{{col_map}}},
+                    ignore_errors = true)
             """)
             if try_enc != enc:
                 log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
@@ -425,12 +432,13 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             continue
     log.info(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
 
-    # 3단계: string_split으로 컬럼 추출 (1-based index)
+    # 3단계: 컬럼 리네임 + 숫자 캐스팅
     t2 = time.time()
-    log.info(f"    컬럼 파싱 시작 (PIPE, {len(col_names)}개 컬럼)")
+    log.info(f"    컬럼 파싱 시작 (PIPE, {n_cols}개 컬럼)")
     exprs = []
     for i, name in enumerate(col_names):
-        base = f"TRIM(string_split(line, '{delimiter}')[{i + 1}])"
+        src = f"column{i:02d}"
+        base = f"TRIM({src})"
         if name in numeric_set:
             base = f"TRY_CAST({base} AS DOUBLE)"
         exprs.append(f"{base} AS {name}")
