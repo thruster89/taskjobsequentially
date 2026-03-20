@@ -178,22 +178,36 @@ def read_fwf_dat(
     names    = [c[1] for c in col_defs]
     numeric = numeric or []
 
-    # 바이트 단위로 읽어서 줄 분리
+    # 바이트 단위로 줄 단위 읽기 (청크 단위, 전체 메모리 적재 방지)
+    CHUNK = 200_000
+    chunks = []
     f = open_file_binary(path)
-    raw_lines = f.read().splitlines()
-    f.close()
+    try:
+        batch = []
+        for raw_line in f:
+            line = raw_line.rstrip(b"\r\n")
+            if not line:
+                continue
+            row = tuple(
+                line[start:end].decode(encoding, errors="replace").strip()
+                for (start, end) in colspecs
+            )
+            batch.append(row)
+            if len(batch) >= CHUNK:
+                chunk = pd.DataFrame(batch, columns=names)
+                chunk = chunk.fillna("")
+                chunk = _cast_numeric(chunk, numeric)
+                chunks.append(chunk)
+                batch = []
+        if batch:
+            chunk = pd.DataFrame(batch, columns=names)
+            chunk = chunk.fillna("")
+            chunk = _cast_numeric(chunk, numeric)
+            chunks.append(chunk)
+    finally:
+        f.close()
 
-    # 바이트 슬라이싱 → 컬럼별 디코딩
-    data = {}
-    for (start, end), name in zip(colspecs, names):
-        data[name] = [
-            line[start:end].decode(encoding, errors="replace").strip()
-            for line in raw_lines
-        ]
-
-    df = pd.DataFrame(data)
-    df = df.fillna("")
-    df = _cast_numeric(df, numeric)
+    df = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=names)
     return df
 
 
