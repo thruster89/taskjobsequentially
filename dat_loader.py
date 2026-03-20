@@ -479,7 +479,7 @@ def read_pipe_dat(
 
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                      delimiter: str = "|", encodings: list = None,
-                     fast: bool = False):
+                     fast: bool = None):
     """
     DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -489,9 +489,10 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric   : 숫자형 캐스팅 컬럼명 리스트
     delimiter : 구분자 (기본값: "|")
     encodings : 시도할 인코딩 목록 (기본값: DUCKDB_ENCODINGS)
-    fast      : True → gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
-                한글 컬럼이 적고 나머지가 ASCII/숫자인 경우 인코딩 감지·
-                euc_kr 디코딩 오버헤드를 완전히 건너뛰어 대폭 빨라짐.
+    fast      : None(기본) → .gz 파일이면 자동 적용, .DAT이면 미적용.
+                True → 강제 적용, False → 강제 미적용.
+                gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
+                인코딩 감지·euc_kr 디코딩 오버헤드를 건너뛰어 빨라짐.
 
     Returns: 건수 (int)
     """
@@ -499,7 +500,9 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     enc_list = encodings or DUCKDB_ENCODINGS
 
     # ── fast 모드: gz 해제 + utf-8 변환 → 인코딩 감지 스킵 ──
-    if fast:
+    # fast=True 명시 또는 .gz 파일이면 자동 적용 (fast=False 명시 시 제외)
+    use_fast = fast if fast is not None else str(path).endswith('.gz')
+    if use_fast:
         path = decompress_gz(path)
         enc = "utf-8"
         log.info(f"    fast 모드: utf-8 사전 변환 완료 → 인코딩 감지 스킵")
@@ -669,12 +672,12 @@ def read_csv_file(
 def read_csv_duckdb(
     con, path: Path, col_names: list = None, numeric: list = None,
     delimiter: str = ",", header: bool = False, encodings: list = None,
-    fast: bool = False,
+    fast: bool = None,
 ):
     """
     DuckDB 네이티브 CSV 읽기 — read_csv 직접 사용
 
-    fast : True → gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
+    fast : True/.gz 자동 → gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
     Returns: 건수 (int)
     """
     numeric_set = set(numeric or [])
@@ -682,7 +685,9 @@ def read_csv_duckdb(
     hdr = "true" if header else "false"
 
     # fast 모드: gz 해제 + utf-8 변환 → 인코딩 감지 스킵
-    if fast:
+    # fast=True 명시 또는 .gz 파일이면 자동 적용
+    use_fast = fast if fast is not None else str(path).endswith('.gz')
+    if use_fast:
         path = decompress_gz(path)
         enc = "utf-8"
         log.info(f"    fast 모드: utf-8 사전 변환 완료 → 인코딩 감지 스킵")
