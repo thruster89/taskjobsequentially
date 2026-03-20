@@ -407,16 +407,20 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     n_cols = len(col_names)
 
     # 샘플 1줄로 실제 파이프 수(=컬럼 수) 파악
+    actual_cols = n_cols
     try:
-        row = con.execute(f"""
-            SELECT column0 FROM read_csv('{path}',
-                delim='\x01', header=false, encoding='{enc}',
-                columns={{'column0':'VARCHAR'}})
-            LIMIT 1
-        """).fetchone()
-        actual_cols = row[0].count(delimiter) + 1 if row else n_cols
-    except Exception:
-        actual_cols = n_cols
+        # 바이트 기반: 압축/인코딩 무관하게 첫 줄 읽기
+        f = open_file_binary(path)
+        try:
+            first_line = f.readline(1024 * 1024)  # 최대 1MB
+        finally:
+            f.close()
+        if first_line:
+            delim_byte = delimiter.encode('ascii')
+            actual_cols = first_line.count(delim_byte) + 1
+            log.info(f"    샘플 파이프 수: {actual_cols - 1}개 → 컬럼 {actual_cols}개")
+    except Exception as e:
+        log.info(f"    샘플 컬럼 수 감지 실패({e}), 정의 {n_cols}개 사용")
 
     # 실제 컬럼 수만큼 columns 정의 (부족하면 ignore_errors 발생 방지)
     total_cols = max(actual_cols, n_cols)
