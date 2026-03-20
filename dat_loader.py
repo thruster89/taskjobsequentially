@@ -32,6 +32,25 @@ ENCODINGS = ["cp949", "utf-8"]
 # DuckDB는 cp949를 직접 지원하지 않으므로 euc-kr(=euc_kr)도 시도
 DUCKDB_ENCODINGS = ["utf-8", "euc_kr", "cp949"]
 
+
+def _detect_duckdb_encoding(con, path, enc_list=None):
+    """샘플 100줄로 인코딩을 빠르게 감지 (대용량 파일 전체 읽기 방지)"""
+    enc_list = enc_list or DUCKDB_ENCODINGS
+    for enc in enc_list:
+        try:
+            con.execute(f"""
+                SELECT column0 FROM read_csv('{path}',
+                    delim    = '\x01',
+                    header   = false,
+                    encoding = '{enc}',
+                    columns  = {{'column0': 'VARCHAR'}})
+                LIMIT 100
+            """).fetchall()
+            return enc
+        except Exception:
+            continue
+    raise RuntimeError(f"DuckDB 인코딩 감지 실패 (시도: {enc_list}): {path}")
+
 # sas_to_duckdb.py 와 함께 쓸 때는 그쪽 logger 를 그대로 사용
 # 단독 실행 시에는 기본 logger 사용
 log = logging.getLogger("pipeline")
@@ -194,24 +213,17 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # 파일을 줄 단위 단일 컬럼으로 읽기
-    # delim='\x01' (SOH): 데이터에 없는 구분자 → 줄 전체가 column0
-    for enc in enc_list:
-        try:
-            con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE _fwf_raw AS
-                SELECT column0 AS line
-                FROM read_csv('{path}',
-                    delim      = '\x01',
-                    header     = false,
-                    encoding   = '{enc}',
-                    columns    = {{'column0': 'VARCHAR'}})
-            """)
-            break
-        except Exception:
-            continue
-    else:
-        raise RuntimeError(f"DuckDB read_csv 인코딩 실패: {path}")
+    # 샘플로 인코딩 감지 후 전체 읽기 (대용량 파일에서 인코딩별 전체 시도 방지)
+    enc = _detect_duckdb_encoding(con, path, enc_list)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _fwf_raw AS
+        SELECT column0 AS line
+        FROM read_csv('{path}',
+            delim      = '\x01',
+            header     = false,
+            encoding   = '{enc}',
+            columns    = {{'column0': 'VARCHAR'}})
+    """)
 
     # SUBSTR로 컬럼 추출 (SQL 1-based → start+1)
     exprs = []
@@ -293,24 +305,17 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # FWF와 동일: 줄 단위 단일 컬럼으로 읽고 string_split으로 분리
-    # → trailing delimiter, 컬럼 수 불일치 문제 없음
-    for enc in enc_list:
-        try:
-            con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE _pipe_raw AS
-                SELECT column0 AS line
-                FROM read_csv('{path}',
-                    delim      = '\x01',
-                    header     = false,
-                    encoding   = '{enc}',
-                    columns    = {{'column0': 'VARCHAR'}})
-            """)
-            break
-        except Exception:
-            continue
-    else:
-        raise RuntimeError(f"DuckDB read_csv 인코딩 실패: {path}")
+    # 샘플로 인코딩 감지 후 전체 읽기
+    enc = _detect_duckdb_encoding(con, path, enc_list)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _pipe_raw AS
+        SELECT column0 AS line
+        FROM read_csv('{path}',
+            delim      = '\x01',
+            header     = false,
+            encoding   = '{enc}',
+            columns    = {{'column0': 'VARCHAR'}})
+    """)
 
     # string_split으로 컬럼 추출 (1-based index)
     exprs = []
@@ -428,53 +433,49 @@ def read_csv_duckdb(
     enc_list = encodings or DUCKDB_ENCODINGS
     hdr = "true" if header else "false"
 
-    for enc in enc_list:
-        try:
-            # 컬럼명이 명시되어 있으면 columns 매핑 사용
-            if col_names:
-                col_map = ", ".join(
-                    f"'{c}': 'DOUBLE'" if c in numeric_set else f"'{c}': 'VARCHAR'"
-                    for c in col_names
-                )
-                con.execute(f"""
-                    CREATE OR REPLACE TEMP TABLE _csv_parsed AS
-                    SELECT * FROM read_csv('{path}',
-                        delim    = '{delimiter}',
-                        header   = {hdr},
-                        encoding = '{enc}',
-                        columns  = {{{col_map}}})
-                """)
-            else:
-                # 헤더에서 컬럼명 자동 추출 (header=True 전제)
-                con.execute(f"""
-                    CREATE OR REPLACE TEMP TABLE _csv_parsed AS
-                    SELECT * FROM read_csv('{path}',
-                        delim    = '{delimiter}',
-                        header   = true,
-                        encoding = '{enc}',
-                        all_varchar = true)
-                """)
-                # numeric 캐스팅
-                if numeric_set:
-                    cols_info = con.execute(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name='_csv_parsed' ORDER BY ordinal_position"
-                    ).fetchall()
-                    exprs = []
-                    for (c,) in cols_info:
-                        if c in numeric_set:
-                            exprs.append(f"TRY_CAST({c} AS DOUBLE) AS {c}")
-                        else:
-                            exprs.append(c)
-                    con.execute(f"""
-                        CREATE OR REPLACE TEMP TABLE _csv_parsed AS
-                        SELECT {', '.join(exprs)} FROM _csv_parsed
-                    """)
-            break
-        except Exception:
-            continue
+    # 샘플로 인코딩 감지 후 전체 읽기
+    enc = _detect_duckdb_encoding(con, path, enc_list)
+
+    # 컬럼명이 명시되어 있으면 columns 매핑 사용
+    if col_names:
+        col_map = ", ".join(
+            f"'{c}': 'DOUBLE'" if c in numeric_set else f"'{c}': 'VARCHAR'"
+            for c in col_names
+        )
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _csv_parsed AS
+            SELECT * FROM read_csv('{path}',
+                delim    = '{delimiter}',
+                header   = {hdr},
+                encoding = '{enc}',
+                columns  = {{{col_map}}})
+        """)
     else:
-        raise RuntimeError(f"DuckDB read_csv 인코딩 실패: {path}")
+        # 헤더에서 컬럼명 자동 추출 (header=True 전제)
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE _csv_parsed AS
+            SELECT * FROM read_csv('{path}',
+                delim    = '{delimiter}',
+                header   = true,
+                encoding = '{enc}',
+                all_varchar = true)
+        """)
+        # numeric 캐스팅
+        if numeric_set:
+            cols_info = con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='_csv_parsed' ORDER BY ordinal_position"
+            ).fetchall()
+            exprs = []
+            for (c,) in cols_info:
+                if c in numeric_set:
+                    exprs.append(f"TRY_CAST({c} AS DOUBLE) AS {c}")
+                else:
+                    exprs.append(c)
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE _csv_parsed AS
+                SELECT {', '.join(exprs)} FROM _csv_parsed
+            """)
 
     cnt = con.execute("SELECT COUNT(*) FROM _csv_parsed").fetchone()[0]
     return cnt
