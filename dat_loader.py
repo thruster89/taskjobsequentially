@@ -33,8 +33,8 @@ except ImportError:
 # 인코딩 fallback 순서
 ENCODINGS = ["cp949", "utf-8"]
 # DuckDB 네이티브 읽기용 인코딩 순서
-# DuckDB는 cp949를 직접 지원하지 않으므로 euc-kr(=euc_kr)도 시도
-DUCKDB_ENCODINGS = ["utf-8", "euc_kr", "cp949"]
+# encodings 확장 설치 시 cp949 직접 지원, 없으면 euc_kr 폴백
+DUCKDB_ENCODINGS = ["utf-8", "cp949", "euc_kr"]
 
 
 # charset_normalizer 결과 → DuckDB 호환 인코딩 매핑
