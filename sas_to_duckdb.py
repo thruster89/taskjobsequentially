@@ -1028,6 +1028,9 @@ def main():
 
     # 순차 실행: ym → job 순서
     con = duckdb.connect(str(db_path))
+    # 대용량 gz 파일 OOM 방지: 메모리 제한 + 디스크 스필 활성화
+    con.execute("SET memory_limit = '4GB'")
+    con.execute("SET temp_directory = 'duckdb_tmp'")
     try:
         t_total = time.time()
         failed_jobs = []
