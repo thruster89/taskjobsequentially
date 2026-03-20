@@ -25,28 +25,42 @@ DESC = "FTP 다운로드 → 로드 예시"
 from ftp_config import FTP_IFRS4
 
 
-def download_ftp(cfg, yyyymm, patterns=None):
+def download_ftp(cfg, yyyymm, patterns=None, excludes=None):
     """FTP에서 파일 다운로드 → data/{yyyymm}/
 
     cfg      : FTP_IFRS4 등 접속 정보 dict
     patterns : 다운받을 파일명 패턴 리스트 (None이면 전체)
                예: ["btLtrJ930_020_", "RS100_"]
+    excludes : 제외할 패턴 리스트
+               예: ["_all_"]
     """
     local_dir = ROOT / "data" / yyyymm
     local_dir.mkdir(parents=True, exist_ok=True)
 
     with FTP() as ftp:
+        ftp.encoding = cfg.get("encoding", "utf-8")
         ftp.connect(cfg["host"], cfg.get("port", 21))
+        log.info(f"  [FTP] 접속: {cfg['host']}:{cfg.get('port', 21)}")
         ftp.login(cfg["user"], cfg["password"])
-        ftp.cwd(cfg.get("remote_dir", "/"))
+        log.info(f"  [FTP] 로그인: {cfg['user']}")
+        remote_dir = cfg.get("remote_dir", "/")
+        ftp.cwd(remote_dir)
+        log.info(f"  [FTP] 원격 경로: {ftp.pwd()}")
+        log.info(f"  [FTP] 로컬 경로: {local_dir}")
 
         files = ftp.nlst()
+        log.info(f"  [FTP] 전체 파일: {len(files)}개")
 
         if patterns:
+            log.info(f"  [FTP] 패턴 필터: {patterns}")
             files = [f for f in files
                      if any(p in f for p in patterns)]
+        if excludes:
+            log.info(f"  [FTP] 제외 필터: {excludes}")
+            files = [f for f in files
+                     if not any(x in f for x in excludes)]
 
-        log.info(f"  [FTP] {len(files)}개 파일 다운로드")
+        log.info(f"  [FTP] 대상 파일: {len(files)}개")
         for fname in files:
             local_path = local_dir / fname
             if local_path.exists():
@@ -60,8 +74,10 @@ def download_ftp(cfg, yyyymm, patterns=None):
 def prejob(yyyymm):
     """LOAD 전에 FTP에서 필요한 파일만 다운로드"""
     download_ftp(FTP_IFRS4, yyyymm, patterns=[
-        "btLtrJ930_020_",       # 930_020 파일 (_all 포함)
+        "btLtrJ930_020_",       # 930_020 파일
         # "RS100_",             # 필요한 패턴 추가
+    ], excludes=[
+        "_all_",                # 020_all 제외
     ])
 
 
