@@ -86,6 +86,7 @@ except ImportError:
 ROOT = Path(__file__).parent
 MAX_READ_WORKERS = 4
 LOAD_TIMEOUT = 300          # 테이블당 최대 읽기 시간 (초), 0이면 무제한
+DB_FILE = "ifrs4-expense.duckdb"   # 출력 DuckDB 파일명
 ENCODINGS = ["cp949", "utf-8"]
 FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
 
@@ -477,12 +478,13 @@ def load_job_module(job_path: str):
 
     JOB 파일 필수 정의:
       NAME          : str   — JOB 이름 (예: "job1")
-      TABLES        : dict  — 테이블 정의 {name: {type, file, cols, ...}}
-      logic(con, yyyymm)    — 비즈니스 로직
-      validate(con, yyyymm) — 검증 로직
 
     선택 정의:
       DESC          : str   — 설명
+      TABLES        : dict  — 테이블 정의 {name: {type, file, cols, ...}}
+      prejob(yyyymm)        — 사전 작업 (FTP 다운로드 등)
+      logic(con, yyyymm)    — 비즈니스 로직
+      validate(con, yyyymm) — 검증 로직
       EXPORT_SHEETS : dict  — {table_name: sheet_name}
     """
     path = Path(job_path).resolve()
@@ -493,9 +495,8 @@ def load_job_module(job_path: str):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
-    for attr in ("NAME", "TABLES", "logic", "validate"):
-        if not hasattr(mod, attr):
-            raise AttributeError(f"JOB 파일에 '{attr}' 없음: {path}")
+    if not hasattr(mod, "NAME"):
+        raise AttributeError(f"JOB 파일에 'NAME' 없음: {path}")
 
     return mod
 
@@ -892,37 +893,43 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
     if run_all and skip_load:
         log.info(f"[{name}] LOAD 스킵")
     elif run_all or "load" in stages:
-        tables = job_mod.TABLES
-        if only_tables:
-            unknown = set(only_tables) - set(tables)
-            if unknown:
-                log.warning(f"[{name}] 존재하지 않는 테이블 무시: {unknown}")
-            tables = {k: v for k, v in tables.items() if k in only_tables}
-            if not tables:
-                log.warning(f"[{name}] 로드할 테이블이 없습니다")
-        tmo_label = f", 타임아웃={load_timeout}초" if load_timeout else ""
-        log.info(f"[{name}] LOAD ({len(tables)}개 테이블{tmo_label})")
-        loaded, failed = do_load(con, yyyymm, tables, timeout=load_timeout)
-        if failed:
-            log.warning(f"[{name}] 로드 실패: {failed}")
+        tables = getattr(job_mod, "TABLES", None)
+        if not tables:
+            log.info(f"[{name}] TABLES 없음 — LOAD 스킵")
+        else:
+            if only_tables:
+                unknown = set(only_tables) - set(tables)
+                if unknown:
+                    log.warning(f"[{name}] 존재하지 않는 테이블 무시: {unknown}")
+                tables = {k: v for k, v in tables.items() if k in only_tables}
+                if not tables:
+                    log.warning(f"[{name}] 로드할 테이블이 없습니다")
+            if tables:
+                tmo_label = f", 타임아웃={load_timeout}초" if load_timeout else ""
+                log.info(f"[{name}] LOAD ({len(tables)}개 테이블{tmo_label})")
+                loaded, failed = do_load(con, yyyymm, tables, timeout=load_timeout)
+                if failed:
+                    log.warning(f"[{name}] 로드 실패: {failed}")
 
     # 2. LOGIC
     if run_all or "logic" in stages:
-        try:
-            log.info(f"[{name}] LOGIC")
-            job_mod.logic(con, yyyymm)
-        except Exception as e:
-            log.error(f"[{name}] LOGIC 실패 — 다음 단계로 계속 진행: {e}")
+        if hasattr(job_mod, "logic"):
+            try:
+                log.info(f"[{name}] LOGIC")
+                job_mod.logic(con, yyyymm)
+            except Exception as e:
+                log.error(f"[{name}] LOGIC 실패 — 다음 단계로 계속 진행: {e}")
 
     # 3. VALIDATE
     if run_all or "validate" in stages:
-        try:
-            log.info("─" * 60)
-            log.info(f"[{name}] VALIDATE")
-            job_mod.validate(con, yyyymm)
-            log.info("─" * 60)
-        except Exception as e:
-            log.error(f"[{name}] VALIDATE 실패 — 다음 단계로 계속 진행: {e}")
+        if hasattr(job_mod, "validate"):
+            try:
+                log.info("─" * 60)
+                log.info(f"[{name}] VALIDATE")
+                job_mod.validate(con, yyyymm)
+                log.info("─" * 60)
+            except Exception as e:
+                log.error(f"[{name}] VALIDATE 실패 — 다음 단계로 계속 진행: {e}")
 
     # 4. EXPORT
     if run_all or "export" in stages:
@@ -1005,7 +1012,7 @@ def main():
         job_paths.extend(str(f) for f in found)
 
     ym_list = args.ym
-    db_path = ROOT / "db" / "ifrs4-expense.duckdb"
+    db_path = ROOT / "db" / DB_FILE
     db_path.parent.mkdir(parents=True, exist_ok=True)
     log.info(f"대상 월: {', '.join(ym_list)}")
     log.info(f"DB    : {db_path}")
