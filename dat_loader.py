@@ -16,6 +16,7 @@ import zipfile
 import json
 import argparse
 import logging
+import time
 import pandas as pd
 from io import TextIOWrapper
 from pathlib import Path
@@ -227,19 +228,37 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # 샘플로 인코딩 감지 후 전체 읽기 (대용량 파일에서 인코딩별 전체 시도 방지)
+    # 1단계: 샘플로 인코딩 감지
+    t0 = time.time()
     enc = _detect_duckdb_encoding(con, path, enc_list)
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _fwf_raw AS
-        SELECT column0 AS line
-        FROM read_csv('{path}',
-            delim      = '\x01',
-            header     = false,
-            encoding   = '{enc}',
-            columns    = {{'column0': 'VARCHAR'}})
-    """)
+    log.debug(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
-    # SUBSTR로 컬럼 추출 (SQL 1-based → start+1)
+    # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
+    t1 = time.time()
+    remaining = [e for e in enc_list if e != enc]
+    for try_enc in [enc] + remaining:
+        try:
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE _fwf_raw AS
+                SELECT column0 AS line
+                FROM read_csv('{path}',
+                    delim      = '\x01',
+                    header     = false,
+                    encoding   = '{try_enc}',
+                    columns    = {{'column0': 'VARCHAR'}})
+            """)
+            if try_enc != enc:
+                log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
+            break
+        except Exception as e:
+            if try_enc == remaining[-1] if remaining else try_enc == enc:
+                raise
+            log.debug(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
+            continue
+    log.debug(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
+
+    # 3단계: SUBSTR로 컬럼 추출 (SQL 1-based → start+1)
+    t2 = time.time()
     exprs = []
     for (start, end), name in col_defs:
         width = end - start
@@ -254,6 +273,7 @@ def read_fwf_duckdb(con, path: Path, col_defs: list, numeric: list = None,
     """)
     cnt = con.execute("SELECT COUNT(*) FROM _fwf_parsed").fetchone()[0]
     con.execute("DROP TABLE IF EXISTS _fwf_raw")
+    log.debug(f"    컬럼 파싱 완료  {cnt:,}건  ({time.time()-t2:.1f}초)")
     return cnt
 
 
@@ -319,19 +339,37 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # 샘플로 인코딩 감지 후 전체 읽기
+    # 1단계: 샘플로 인코딩 감지
+    t0 = time.time()
     enc = _detect_duckdb_encoding(con, path, enc_list)
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _pipe_raw AS
-        SELECT column0 AS line
-        FROM read_csv('{path}',
-            delim      = '\x01',
-            header     = false,
-            encoding   = '{enc}',
-            columns    = {{'column0': 'VARCHAR'}})
-    """)
+    log.debug(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
-    # string_split으로 컬럼 추출 (1-based index)
+    # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
+    t1 = time.time()
+    remaining = [e for e in enc_list if e != enc]
+    for try_enc in [enc] + remaining:
+        try:
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE _pipe_raw AS
+                SELECT column0 AS line
+                FROM read_csv('{path}',
+                    delim      = '\x01',
+                    header     = false,
+                    encoding   = '{try_enc}',
+                    columns    = {{'column0': 'VARCHAR'}})
+            """)
+            if try_enc != enc:
+                log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
+            break
+        except Exception as e:
+            if try_enc == remaining[-1] if remaining else try_enc == enc:
+                raise
+            log.debug(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
+            continue
+    log.debug(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
+
+    # 3단계: string_split으로 컬럼 추출 (1-based index)
+    t2 = time.time()
     exprs = []
     for i, name in enumerate(col_names):
         base = f"TRIM(string_split(line, '{delimiter}')[{i + 1}])"
@@ -345,6 +383,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     """)
     cnt = con.execute("SELECT COUNT(*) FROM _pipe_parsed").fetchone()[0]
     con.execute("DROP TABLE IF EXISTS _pipe_raw")
+    log.debug(f"    컬럼 파싱 완료  {cnt:,}건  ({time.time()-t2:.1f}초)")
     return cnt
 
 
@@ -447,51 +486,67 @@ def read_csv_duckdb(
     enc_list = encodings or DUCKDB_ENCODINGS
     hdr = "true" if header else "false"
 
-    # 샘플로 인코딩 감지 후 전체 읽기
+    # 1단계: 샘플로 인코딩 감지
+    t0 = time.time()
     enc = _detect_duckdb_encoding(con, path, enc_list)
+    log.debug(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
-    # 컬럼명이 명시되어 있으면 columns 매핑 사용
-    if col_names:
-        col_map = ", ".join(
-            f"'{c}': 'DOUBLE'" if c in numeric_set else f"'{c}': 'VARCHAR'"
-            for c in col_names
-        )
+    # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
+    t1 = time.time()
+    remaining = [e for e in enc_list if e != enc]
+    for try_enc in [enc] + remaining:
+        try:
+            if col_names:
+                col_map = ", ".join(
+                    f"'{c}': 'DOUBLE'" if c in numeric_set else f"'{c}': 'VARCHAR'"
+                    for c in col_names
+                )
+                con.execute(f"""
+                    CREATE OR REPLACE TEMP TABLE _csv_parsed AS
+                    SELECT * FROM read_csv('{path}',
+                        delim    = '{delimiter}',
+                        header   = {hdr},
+                        encoding = '{try_enc}',
+                        columns  = {{{col_map}}})
+                """)
+            else:
+                con.execute(f"""
+                    CREATE OR REPLACE TEMP TABLE _csv_parsed AS
+                    SELECT * FROM read_csv('{path}',
+                        delim    = '{delimiter}',
+                        header   = true,
+                        encoding = '{try_enc}',
+                        all_varchar = true)
+                """)
+            if try_enc != enc:
+                log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
+            break
+        except Exception as e:
+            if try_enc == remaining[-1] if remaining else try_enc == enc:
+                raise
+            log.debug(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
+            continue
+    log.debug(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
+
+    # numeric 캐스팅 (col_names 없는 경우)
+    if not col_names and numeric_set:
+        cols_info = con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='_csv_parsed' ORDER BY ordinal_position"
+        ).fetchall()
+        exprs = []
+        for (c,) in cols_info:
+            if c in numeric_set:
+                exprs.append(f"TRY_CAST({c} AS DOUBLE) AS {c}")
+            else:
+                exprs.append(c)
         con.execute(f"""
             CREATE OR REPLACE TEMP TABLE _csv_parsed AS
-            SELECT * FROM read_csv('{path}',
-                delim    = '{delimiter}',
-                header   = {hdr},
-                encoding = '{enc}',
-                columns  = {{{col_map}}})
+            SELECT {', '.join(exprs)} FROM _csv_parsed
         """)
-    else:
-        # 헤더에서 컬럼명 자동 추출 (header=True 전제)
-        con.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _csv_parsed AS
-            SELECT * FROM read_csv('{path}',
-                delim    = '{delimiter}',
-                header   = true,
-                encoding = '{enc}',
-                all_varchar = true)
-        """)
-        # numeric 캐스팅
-        if numeric_set:
-            cols_info = con.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name='_csv_parsed' ORDER BY ordinal_position"
-            ).fetchall()
-            exprs = []
-            for (c,) in cols_info:
-                if c in numeric_set:
-                    exprs.append(f"TRY_CAST({c} AS DOUBLE) AS {c}")
-                else:
-                    exprs.append(c)
-            con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE _csv_parsed AS
-                SELECT {', '.join(exprs)} FROM _csv_parsed
-            """)
 
     cnt = con.execute("SELECT COUNT(*) FROM _csv_parsed").fetchone()[0]
+    log.debug(f"    CSV 파싱 완료  {cnt:,}건  ({time.time()-t1:.1f}초)")
     return cnt
 
 
