@@ -855,6 +855,17 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
     log.info("=" * 60)
     t0 = time.time()
 
+    # 0. PREJOB
+    if run_all or "prejob" in stages:
+        if hasattr(job_mod, "prejob"):
+            try:
+                log.info(f"[{name}] PREJOB")
+                ts = time.time()
+                job_mod.prejob(yyyymm)
+                log.info(f"[{name}] PREJOB 완료 ({time.time()-ts:.1f}초)")
+            except Exception as e:
+                log.error(f"[{name}] PREJOB 실패 — 다음 단계로 계속 진행: {e}")
+
     # 1. LOAD
     if run_all and skip_load:
         log.info(f"[{name}] LOAD 스킵")
@@ -919,6 +930,7 @@ def main():
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py jobs/job2.py jobs/job3.py
   python sas_to_duckdb.py --ym 202601 --job-dir jobs          # jobs/ 폴더 전체 이름순 실행
   python sas_to_duckdb.py --ym 202601 202602 --job jobs/job1.py jobs/job2.py  # 월별 순차
+  python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage prejob load  # prejob+load만
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py --stage load
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s logic validate
   python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -t fio841 fio842
@@ -933,7 +945,7 @@ def main():
     parser.add_argument("--skip-load", action="store_true",
                         help="LOAD 단계 생략")
     parser.add_argument("--stage", "-s", nargs="+",
-                        choices=["load", "logic", "validate", "export"],
+                        choices=["prejob", "load", "logic", "validate", "export"],
                         help="실행할 단계만 지정 (예: --stage load)")
     parser.add_argument("--tables", "-t", nargs="+",
                         help="로드할 테이블명만 지정 (예: --tables fio841 fio842)")
