@@ -12,7 +12,9 @@ JOB 파일을 지정하여 실행합니다. 각 JOB 파일은 독립적으로 �
 """
 
 import re
+import os
 import sys
+import signal
 import logging
 import time
 import argparse
@@ -61,6 +63,20 @@ def setup_logger() -> logging.Logger:
     return logger
 
 log = setup_logger()
+
+# ── Ctrl+C 강제 종료 지원 ──
+_shutdown = threading.Event()
+
+def _handle_sigint(signum, frame):
+    if _shutdown.is_set():
+        # 두 번째 Ctrl+C → 즉시 강제 종료
+        log.warning("강제 종료 (Ctrl+C 두 번)")
+        os._exit(1)
+    log.warning("종료 요청 (Ctrl+C) — 현재 작업 완료 후 중단됩니다. 즉시 종료: Ctrl+C 한번 더")
+    _shutdown.set()
+
+signal.signal(signal.SIGINT, _handle_sigint)
+signal.signal(signal.SIGTERM, _handle_sigint)
 
 # ── 의존성 ───────────────────────────────────
 try:
@@ -449,6 +465,17 @@ def _load_file(path, cfg, name):
     raise ValueError(f"Unknown type: {cfg['type']}")
 
 
+def _chunk_insert(con, name, df):
+    """청크 DataFrame을 DuckDB 테이블에 INSERT (테이블 없으면 CREATE)"""
+    tmp = f"_chk_{name}"
+    con.register(tmp, df)
+    if not table_exists(con, name):
+        con.execute(f"CREATE TABLE {name} AS SELECT * FROM {tmp}")
+    else:
+        con.execute(f"INSERT INTO {name} SELECT * FROM {tmp}")
+    con.unregister(tmp)
+
+
 def _upsert(con, name, df, yyyymm, month_col):
     """월별 누적 적재: 해당 월 DELETE → INSERT"""
     tmp = f"_df_{name}"
@@ -550,6 +577,9 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
 
     # ── FWF / Pipe: DuckDB 네이티브 읽기 (pandas 우회) ──
     for name, cfg in native_tables.items():
+        if _shutdown.is_set():
+            log.warning("종료 요청으로 남은 테이블 건너뜀")
+            break
         ttype = cfg["type"]
         timer = None
         ts = time.time()
@@ -559,8 +589,16 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
             log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
 
             # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
+            _interrupted = threading.Event()
             if t > 0:
-                timer = threading.Timer(t, lambda: con.interrupt())
+                def _do_interrupt():
+                    _interrupted.set()
+                    try:
+                        con.interrupt()
+                    except Exception:
+                        pass
+                timer = threading.Timer(t, _do_interrupt)
+                timer.daemon = True
                 timer.start()
 
             # 테이블 정의에 encoding 있으면 우선 사용
@@ -606,34 +644,89 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 timer.cancel()
             elapsed = time.time() - ts
             # 타임아웃 여부 판별
-            if t > 0 and elapsed >= t - 1:
-                log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
-                failed.append(name)
-                continue
-            log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
+            is_timeout = _interrupted.is_set()
+            if is_timeout:
+                log.warning(f"  [Read] {_pad(name, 20)} DuckDB 타임아웃 ({elapsed:.0f}초) → pandas 청크 폴백")
+            else:
+                log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 청크 폴백")
+            # con.interrupt() 후 커넥션 정리 — 잔여 에러 소진
+            try:
+                con.execute("SELECT 1")
+            except Exception:
+                pass
             try:
                 ts_fb = time.time()
-                # pandas 폴백에도 타임아웃 적용
                 pd_encs = [enc_override] if enc_override else ENCODINGS
-                def _pandas_fallback():
-                    if ttype == "fwf":
-                        return read_fwf_dat(path, cfg["cols"],
-                                            numeric=cfg.get("numeric"),
-                                            encoding=cfg.get("encoding", "cp949"))
+                month_col = cfg.get("month_col")
+                CHUNK_SIZE = 200_000
+
+                # 월별 데이터 선삭제 (청크 INSERT 전)
+                if table_exists(con, name):
+                    if month_col:
+                        con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
                     else:
-                        return read_pipe_dat(path, cfg["cols"],
-                                             numeric=cfg.get("numeric"),
-                                             encodings=pd_encs,
-                                             delimiter=cfg.get("delimiter", "|"))
+                        log.warning(f"  [{name}] month_col=null → 전체 교체 (기존 데이터 삭제)")
+                        con.execute(f"DELETE FROM {name}")
 
-                if t > 0:
-                    with ThreadPoolExecutor(max_workers=1) as fb_pool:
-                        fb_fut = fb_pool.submit(_pandas_fallback)
-                        df = fb_fut.result(timeout=t)
+                cnt = 0
+                if ttype == "fwf":
+                    # fwf: 바이트 슬라이싱으로 청크 단위 읽기 → DuckDB INSERT
+                    from dat_loader import open_file_binary, _cast_numeric
+                    colspecs = [c[0] for c in cfg["cols"]]
+                    col_names = [c[1] for c in cfg["cols"]]
+                    numeric = cfg.get("numeric") or []
+                    enc = cfg.get("encoding", "cp949")
+                    f = open_file_binary(path)
+                    try:
+                        batch = []
+                        for raw_line in f:
+                            line = raw_line.rstrip(b"\r\n")
+                            if not line:
+                                continue
+                            batch.append(tuple(
+                                line[s:e].decode(enc, errors="replace").strip()
+                                for (s, e) in colspecs
+                            ))
+                            if len(batch) >= CHUNK_SIZE:
+                                chunk = pd.DataFrame(batch, columns=col_names).fillna("")
+                                chunk = _cast_numeric(chunk, numeric)
+                                _chunk_insert(con, name, chunk)
+                                cnt += len(chunk)
+                                del chunk, batch
+                                batch = []
+                        if batch:
+                            chunk = pd.DataFrame(batch, columns=col_names).fillna("")
+                            chunk = _cast_numeric(chunk, numeric)
+                            _chunk_insert(con, name, chunk)
+                            cnt += len(chunk)
+                    finally:
+                        f.close()
                 else:
-                    df = _pandas_fallback()
+                    # pipe/csv: pd.read_csv chunksize로 청크 단위 읽기
+                    from dat_loader import open_file, _cast_numeric, _strip_str
+                    col_names = cfg["cols"]
+                    numeric = cfg.get("numeric") or []
+                    delimiter = cfg.get("delimiter", "|")
+                    for enc in pd_encs:
+                        try:
+                            reader = pd.read_csv(
+                                path, sep=delimiter, names=col_names,
+                                dtype=str, header=None, encoding=enc,
+                                on_bad_lines="warn", chunksize=CHUNK_SIZE,
+                            )
+                            for chunk in reader:
+                                chunk = chunk.fillna("")
+                                chunk = _strip_str(chunk, exclude=numeric)
+                                chunk = _cast_numeric(chunk, numeric)
+                                _chunk_insert(con, name, chunk)
+                                cnt += len(chunk)
+                                del chunk
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    else:
+                        raise RuntimeError(f"pandas 인코딩 실패 (시도: {pd_encs})")
 
-                cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
                 log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
                 loaded.append(name)
             except TimeoutError:
@@ -670,6 +763,9 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
 
         log.info(f"  ── Load 시작 ({len(results)}개 테이블) ──")
         for name, cfg, df in results:
+            if _shutdown.is_set():
+                log.warning("종료 요청으로 남은 Load 건너뜀")
+                break
             try:
                 ts = time.time()
                 cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
@@ -1028,15 +1124,24 @@ def main():
 
     # 순차 실행: ym → job 순서
     con = duckdb.connect(str(db_path))
+    # 대용량 gz 파일 OOM 방지: 메모리 제한 + 디스크 스필 활성화
+    con.execute("SET memory_limit = '4GB'")
+    con.execute("SET temp_directory = 'duckdb_tmp'")
     try:
         t_total = time.time()
         failed_jobs = []
         for yyyymm in ym_list:
+            if _shutdown.is_set():
+                log.warning("종료 요청으로 남은 월 건너뜀")
+                break
             if len(ym_list) > 1:
                 log.info("═" * 60)
                 log.info(f"▶ 월별 실행 시작: {yyyymm}")
                 log.info("═" * 60)
             for mod in job_mods:
+                if _shutdown.is_set():
+                    log.warning("종료 요청으로 남은 JOB 건너뜀")
+                    break
                 try:
                     run_job(con, mod, yyyymm, skip_load=args.skip_load,
                             stages=args.stage, only_tables=args.tables,
