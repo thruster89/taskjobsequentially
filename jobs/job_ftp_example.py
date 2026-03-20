@@ -34,13 +34,17 @@ def download_ftp(cfg, yyyymm, patterns=None, excludes=None):
     excludes : 제외할 패턴 리스트
                예: ["_all_"]
     """
+    host = cfg["host"]
+    port = cfg.get("port", 21)
+    log.info(f"  [FTP] 연결 시도: {host}:{port}")
+
     local_dir = ROOT / "data" / yyyymm
     local_dir.mkdir(parents=True, exist_ok=True)
 
     with FTP() as ftp:
         ftp.encoding = cfg.get("encoding", "utf-8")
-        ftp.connect(cfg["host"], cfg.get("port", 21))
-        log.info(f"  [FTP] 접속: {cfg['host']}:{cfg.get('port', 21)}")
+        ftp.connect(host, port, timeout=10)
+        log.info(f"  [FTP] 접속 성공")
         ftp.login(cfg["user"], cfg["password"])
         log.info(f"  [FTP] 로그인: {cfg['user']}")
         remote_dir = cfg.get("remote_dir", "/")
