@@ -589,8 +589,16 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
             log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
 
             # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
+            _interrupted = threading.Event()
             if t > 0:
-                timer = threading.Timer(t, lambda: con.interrupt())
+                def _do_interrupt():
+                    _interrupted.set()
+                    try:
+                        con.interrupt()
+                    except Exception:
+                        pass
+                timer = threading.Timer(t, _do_interrupt)
+                timer.daemon = True
                 timer.start()
 
             # 테이블 정의에 encoding 있으면 우선 사용
@@ -636,11 +644,16 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 timer.cancel()
             elapsed = time.time() - ts
             # 타임아웃 여부 판별
-            if t > 0 and elapsed >= t - 1:
-                log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
-                failed.append(name)
-                continue
-            log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 청크 폴백")
+            is_timeout = _interrupted.is_set()
+            if is_timeout:
+                log.warning(f"  [Read] {_pad(name, 20)} DuckDB 타임아웃 ({elapsed:.0f}초) → pandas 청크 폴백")
+            else:
+                log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 청크 폴백")
+            # con.interrupt() 후 커넥션 정리 — 잔여 에러 소진
+            try:
+                con.execute("SELECT 1")
+            except Exception:
+                pass
             try:
                 ts_fb = time.time()
                 pd_encs = [enc_override] if enc_override else ENCODINGS
