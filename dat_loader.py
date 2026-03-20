@@ -203,21 +203,32 @@ def decompress_gz(path: Path):
     else:
         fin_raw = open(path, "rb")
 
+    PROGRESS_INTERVAL = 5_000_000  # 500만행마다 진행 로그
+
     try:
         if is_utf8:
-            # utf-8이면 바이너리 복사만
+            # utf-8이면 줄 단위 복사 + 진행 로그
+            line_count = 0
             with open(out, "wb") as fout:
-                shutil.copyfileobj(fin_raw, fout, length=16 * 1024 * 1024)
+                for line in fin_raw:
+                    fout.write(line)
+                    line_count += 1
+                    if line_count % PROGRESS_INTERVAL == 0:
+                        log.info(f"    변환 진행: {line_count:>12,}행  ({time.time()-t0:.1f}초)")
+            if line_count >= PROGRESS_INTERVAL:
+                log.info(f"    변환 진행: {line_count:>12,}행  (완료)")
         else:
-            # cp949/euc-kr → utf-8 변환
+            # cp949/euc-kr → utf-8 변환 (줄 단위)
             src_enc = "cp949"  # euc_kr 상위호환
-            buf_size = 16 * 1024 * 1024
+            line_count = 0
             with open(out, "wb") as fout:
-                while True:
-                    chunk = fin_raw.read(buf_size)
-                    if not chunk:
-                        break
-                    fout.write(chunk.decode(src_enc, errors="replace").encode("utf-8"))
+                for line in fin_raw:
+                    fout.write(line.decode(src_enc, errors="replace").encode("utf-8"))
+                    line_count += 1
+                    if line_count % PROGRESS_INTERVAL == 0:
+                        log.info(f"    변환 진행: {line_count:>12,}행  ({time.time()-t0:.1f}초)")
+            if line_count >= PROGRESS_INTERVAL:
+                log.info(f"    변환 진행: {line_count:>12,}행  (완료)")
     finally:
         fin_raw.close()
 
