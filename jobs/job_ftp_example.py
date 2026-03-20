@@ -38,16 +38,23 @@ def download_ftp(cfg, yyyymm, patterns=None):
     with FTP() as ftp:
         ftp.encoding = cfg.get("encoding", "utf-8")
         ftp.connect(cfg["host"], cfg.get("port", 21))
+        log.info(f"  [FTP] 접속: {cfg['host']}:{cfg.get('port', 21)}")
         ftp.login(cfg["user"], cfg["password"])
-        ftp.cwd(cfg.get("remote_dir", "/"))
+        log.info(f"  [FTP] 로그인: {cfg['user']}")
+        remote_dir = cfg.get("remote_dir", "/")
+        ftp.cwd(remote_dir)
+        log.info(f"  [FTP] 원격 경로: {ftp.pwd()}")
+        log.info(f"  [FTP] 로컬 경로: {local_dir}")
 
         files = ftp.nlst()
+        log.info(f"  [FTP] 전체 파일: {len(files)}개")
 
         if patterns:
+            log.info(f"  [FTP] 패턴 필터: {patterns}")
             files = [f for f in files
                      if any(p in f for p in patterns)]
 
-        log.info(f"  [FTP] {len(files)}개 파일 다운로드")
+        log.info(f"  [FTP] 대상 파일: {len(files)}개")
         for fname in files:
             local_path = local_dir / fname
             if local_path.exists():
