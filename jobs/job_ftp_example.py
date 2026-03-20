@@ -10,6 +10,7 @@ JOB 예시: FTP 다운로드 (prejob) → 로드 → 집계
   ftp_config.example.py → ftp_config.py 복사 후 비밀번호 입력
 """
 import logging
+import time
 from ftplib import FTP
 from pathlib import Path
 from sas_to_duckdb import sql, check, ROOT
@@ -65,14 +66,46 @@ def download_ftp(cfg, yyyymm, patterns=None, excludes=None):
                      if not any(x in f for x in excludes)]
 
         log.info(f"  [FTP] 대상 파일: {len(files)}개")
-        for fname in files:
+        for i, fname in enumerate(files, 1):
             local_path = local_dir / fname
             if local_path.exists():
-                log.info(f"  [FTP] 이미 존재, 스킵: {fname}")
+                log.info(f"  [FTP] [{i}/{len(files)}] 이미 존재, 스킵: {fname}")
                 continue
-            with open(local_path, "wb") as f:
-                ftp.retrbinary(f"RETR {fname}", f.write)
-            log.info(f"  [FTP] 다운로드: {fname}")
+
+            # 파일 크기 조회
+            try:
+                total = ftp.size(fname)
+            except Exception:
+                total = None
+
+            downloaded = 0
+            last_pct = -1
+            t_start = time.time()
+
+            _f = open(local_path, "wb")
+            try:
+                def write_cb(chunk):
+                    nonlocal downloaded, last_pct
+                    _f.write(chunk)
+                    downloaded += len(chunk)
+                    if total and total > 0:
+                        pct = downloaded * 100 // total
+                        if pct // 10 > last_pct // 10:
+                            last_pct = pct
+                            elapsed = time.time() - t_start
+                            speed = downloaded / elapsed / 1024 / 1024 if elapsed > 0 else 0
+                            log.info(f"  [FTP] [{i}/{len(files)}] {fname}  "
+                                     f"{pct}%  ({downloaded/1024/1024:.0f}/{total/1024/1024:.0f} MB, "
+                                     f"{speed:.1f} MB/s)")
+
+                ftp.retrbinary(f"RETR {fname}", write_cb)
+            finally:
+                _f.close()
+
+            elapsed = time.time() - t_start
+            size_mb = downloaded / 1024 / 1024
+            log.info(f"  [FTP] [{i}/{len(files)}] 완료: {fname}  "
+                     f"({size_mb:.1f} MB, {elapsed:.1f}초)")
 
 
 def prejob(yyyymm):
