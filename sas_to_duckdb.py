@@ -644,13 +644,15 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                                       cfg.get("numeric"),
                                       cfg.get("delimiter", ","),
                                       cfg.get("header", False),
-                                      encodings=encs)
+                                      encodings=encs,
+                                      fast=cfg.get("fast", False))
                 tmp_table = "_csv_parsed"
             else:  # pipe
                 cnt = read_pipe_duckdb(con, path, cfg["cols"],
                                        cfg.get("numeric"),
                                        cfg.get("delimiter", "|"),
-                                       encodings=encs)
+                                       encodings=encs,
+                                       fast=cfg.get("fast", False))
                 tmp_table = "_pipe_parsed"
 
             if timer:

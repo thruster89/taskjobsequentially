@@ -478,7 +478,8 @@ def read_pipe_dat(
 
 
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
-                     delimiter: str = "|", encodings: list = None):
+                     delimiter: str = "|", encodings: list = None,
+                     fast: bool = False):
     """
     DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -488,18 +489,25 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric   : 숫자형 캐스팅 컬럼명 리스트
     delimiter : 구분자 (기본값: "|")
     encodings : 시도할 인코딩 목록 (기본값: DUCKDB_ENCODINGS)
+    fast      : True → gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
+                한글 컬럼이 적고 나머지가 ASCII/숫자인 경우 인코딩 감지·
+                euc_kr 디코딩 오버헤드를 완전히 건너뛰어 대폭 빨라짐.
 
     Returns: 건수 (int)
     """
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # DuckDB는 .gz를 네이티브로 읽고 euc_kr도 기본 지원 → decompress_gz 불필요
-
-    # 1단계: 인코딩 감지
-    t0 = time.time()
-    enc = _detect_duckdb_encoding(con, path, enc_list)
-    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
+    # ── fast 모드: gz 해제 + utf-8 변환 → 인코딩 감지 스킵 ──
+    if fast:
+        path = decompress_gz(path)
+        enc = "utf-8"
+        log.info(f"    fast 모드: utf-8 사전 변환 완료 → 인코딩 감지 스킵")
+    else:
+        # 1단계: 인코딩 감지
+        t0 = time.time()
+        enc = _detect_duckdb_encoding(con, path, enc_list)
+        log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
     # 2단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
     t1 = time.time()
@@ -661,20 +669,28 @@ def read_csv_file(
 def read_csv_duckdb(
     con, path: Path, col_names: list = None, numeric: list = None,
     delimiter: str = ",", header: bool = False, encodings: list = None,
+    fast: bool = False,
 ):
     """
     DuckDB 네이티브 CSV 읽기 — read_csv 직접 사용
 
+    fast : True → gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
     Returns: 건수 (int)
     """
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
     hdr = "true" if header else "false"
 
-    # 1단계: 샘플로 인코딩 감지
-    t0 = time.time()
-    enc = _detect_duckdb_encoding(con, path, enc_list)
-    log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
+    # fast 모드: gz 해제 + utf-8 변환 → 인코딩 감지 스킵
+    if fast:
+        path = decompress_gz(path)
+        enc = "utf-8"
+        log.info(f"    fast 모드: utf-8 사전 변환 완료 → 인코딩 감지 스킵")
+    else:
+        # 1단계: 샘플로 인코딩 감지
+        t0 = time.time()
+        enc = _detect_duckdb_encoding(con, path, enc_list)
+        log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
     # 2단계: 전체 파일 읽기 (인코딩 실패 시 나머지 인코딩으로 재시도)
     t1 = time.time()
