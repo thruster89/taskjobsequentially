@@ -402,13 +402,28 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     enc = _detect_duckdb_encoding(con, path, enc_list)
     log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
-    # 2단계: read_csv로 파이프 구분자 직접 파싱 (C++ 엔진, 1-pass)
-    # 기존 string_split 2-pass 방식 대비 대폭 빠름
+    # 2단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
     t1 = time.time()
     n_cols = len(col_names)
-    # DuckDB columns 맵: 정의된 컬럼만 VARCHAR로 읽고, 초과분은 무시됨
-    col_map = ", ".join(f"column{i:02d}: 'VARCHAR'" for i in range(n_cols))
-    log.info(f"    전체 읽기 시작 (PIPE direct, enc={enc}, {n_cols}개 컬럼)")
+
+    # 샘플 1줄로 실제 파이프 수(=컬럼 수) 파악
+    try:
+        row = con.execute(f"""
+            SELECT column0 FROM read_csv('{path}',
+                delim='\x01', header=false, encoding='{enc}',
+                columns={{'column0':'VARCHAR'}})
+            LIMIT 1
+        """).fetchone()
+        actual_cols = row[0].count(delimiter) + 1 if row else n_cols
+    except Exception:
+        actual_cols = n_cols
+
+    # 실제 컬럼 수만큼 columns 정의 (부족하면 ignore_errors 발생 방지)
+    total_cols = max(actual_cols, n_cols)
+    col_map = ", ".join(f"column{i:02d}: 'VARCHAR'" for i in range(total_cols))
+    if actual_cols != n_cols:
+        log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개 → {total_cols}개로 읽기")
+    log.info(f"    전체 읽기 시작 (PIPE direct, enc={enc}, {total_cols}개 컬럼)")
 
     remaining = [e for e in enc_list if e != enc]
     for try_enc in [enc] + remaining:
@@ -419,8 +434,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                     delim      = '{delimiter}',
                     header     = false,
                     encoding   = '{try_enc}',
-                    columns    = {{{col_map}}},
-                    ignore_errors = true)
+                    columns    = {{{col_map}}})
             """)
             if try_enc != enc:
                 log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
@@ -432,9 +446,9 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             continue
     log.info(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
 
-    # 3단계: 컬럼 리네임 + 숫자 캐스팅
+    # 3단계: 필요한 컬럼만 SELECT + 리네임 + 숫자 캐스팅
     t2 = time.time()
-    log.info(f"    컬럼 파싱 시작 (PIPE, {n_cols}개 컬럼)")
+    log.info(f"    컬럼 파싱 시작 (PIPE, {n_cols}/{total_cols}개 컬럼 추출)")
     exprs = []
     for i, name in enumerate(col_names):
         src = f"column{i:02d}"
