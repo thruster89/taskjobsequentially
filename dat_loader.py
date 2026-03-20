@@ -36,8 +36,10 @@ DUCKDB_ENCODINGS = ["utf-8", "euc_kr", "cp949"]
 
 
 # charset_normalizer 결과 → DuckDB 호환 인코딩 매핑
+# Big5(중국어 번체)는 cp949와 바이트 범위가 겹쳐서 한국어 파일을 오탐하는 경우가 많음
 _ENC_MAP = {
     "euc-kr": "euc_kr", "euckr": "euc_kr", "cp949": "euc_kr",
+    "big5": "euc_kr", "big5hkscs": "euc_kr",   # 한국어 오탐 보정
     "utf-8": "utf-8", "ascii": "utf-8", "utf8": "utf-8",
 }
 
