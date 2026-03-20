@@ -28,8 +28,9 @@ except ImportError:
 
 # 인코딩 fallback 순서
 ENCODINGS = ["cp949", "utf-8"]
-# DuckDB 네이티브 읽기용 인코딩 순서 (cp949 ⊃ euc-kr 이므로 euc-kr 불필요)
-DUCKDB_ENCODINGS = ["utf-8", "cp949"]
+# DuckDB 네이티브 읽기용 인코딩 순서
+# DuckDB는 cp949를 직접 지원하지 않으므로 euc-kr(=euc_kr)도 시도
+DUCKDB_ENCODINGS = ["utf-8", "euc_kr", "cp949"]
 
 # sas_to_duckdb.py 와 함께 쓸 때는 그쪽 logger 를 그대로 사용
 # 단독 실행 시에는 기본 logger 사용
