@@ -14,7 +14,7 @@ from ftplib import FTP
 from pathlib import Path
 from sas_to_duckdb import sql, check, ROOT
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("pipeline")
 
 NAME = "ftp_example"
 DESC = "FTP 다운로드 → 로드 예시"
