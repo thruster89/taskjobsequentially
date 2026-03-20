@@ -512,39 +512,31 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         enc = _detect_duckdb_encoding(con, path, enc_list)
         log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
-    # 2단계: 실제 컬럼 수 감지 → 전부 읽은 뒤 필요한 것만 SELECT
+    # 2단계: 필요한 컬럼만 정의 → 1회 CREATE TABLE로 바로 파싱
     t1 = time.time()
     n_cols = len(col_names)
 
-    # 샘플 1줄로 실제 파이프 수(=컬럼 수) 파악
-    actual_cols = n_cols
-    try:
-        # 바이트 기반: 압축/인코딩 무관하게 첫 줄 읽기
-        f = open_file_binary(path)
-        try:
-            first_line = f.readline(1024 * 1024)  # 최대 1MB
-        finally:
-            f.close()
-        if first_line:
-            delim_byte = delimiter.encode('ascii')
-            actual_cols = first_line.count(delim_byte) + 1
-            log.info(f"    샘플 파이프 수: {actual_cols - 1}개 → 컬럼 {actual_cols}개")
-    except Exception as e:
-        log.info(f"    샘플 컬럼 수 감지 실패({e}), 정의 {n_cols}개 사용")
+    # 필요한 컬럼만 정의 (strict_mode=false → 파일에 더 많은 필드가 있어도 무시)
+    col_map = ", ".join(f"column{i:02d}: 'VARCHAR'" for i in range(n_cols))
+    log.info(f"    읽기 시작 (PIPE direct, enc={enc}, 정의 {n_cols}개 컬럼)")
 
-    # 실제 컬럼 수만큼 columns 정의 (부족하면 ignore_errors 발생 방지)
-    total_cols = max(actual_cols, n_cols)
-    col_map = ", ".join(f"column{i:02d}: 'VARCHAR'" for i in range(total_cols))
-    if actual_cols != n_cols:
-        log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개 → {total_cols}개로 읽기")
-    log.info(f"    전체 읽기 시작 (PIPE direct, enc={enc}, {total_cols}개 컬럼)")
+    # SELECT 표현식: TRIM + 숫자 캐스팅 + 리네임을 read_csv 위에서 바로 수행
+    exprs = []
+    for i, name in enumerate(col_names):
+        src = f"column{i:02d}"
+        base = f"TRIM({src})"
+        if name in numeric_set:
+            base = f"TRY_CAST({base} AS DOUBLE)"
+        exprs.append(f"{base} AS {name}")
+    select_clause = ", ".join(exprs)
 
     remaining = [e for e in enc_list if e != enc]
     for try_enc in [enc] + remaining:
         try:
             con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE _pipe_raw AS
-                SELECT * FROM read_csv('{path}',
+                CREATE OR REPLACE TEMP TABLE _pipe_parsed AS
+                SELECT {select_clause}
+                FROM read_csv('{path}',
                     delim        = '{delimiter}',
                     header       = false,
                     encoding     = '{try_enc}',
@@ -558,28 +550,11 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         except Exception as e:
             if try_enc == remaining[-1] if remaining else try_enc == enc:
                 raise
-            log.info(f"    인코딩 {try_enc} 전체 읽기 실패, 재시도: {e}")
+            log.info(f"    인코딩 {try_enc} 읽기 실패, 재시도: {e}")
             continue
-    log.info(f"    전체 읽기 완료  ({time.time()-t1:.1f}초)")
 
-    # 3단계: 필요한 컬럼만 SELECT + 리네임 + 숫자 캐스팅
-    t2 = time.time()
-    log.info(f"    컬럼 파싱 시작 (PIPE, {n_cols}/{total_cols}개 컬럼 추출)")
-    exprs = []
-    for i, name in enumerate(col_names):
-        src = f"column{i:02d}"
-        base = f"TRIM({src})"
-        if name in numeric_set:
-            base = f"TRY_CAST({base} AS DOUBLE)"
-        exprs.append(f"{base} AS {name}")
-
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _pipe_parsed AS
-        SELECT {', '.join(exprs)} FROM _pipe_raw
-    """)
     cnt = con.execute("SELECT COUNT(*) FROM _pipe_parsed").fetchone()[0]
-    con.execute("DROP TABLE IF EXISTS _pipe_raw")
-    log.info(f"    컬럼 파싱 완료  {cnt:,}건  ({time.time()-t2:.1f}초)")
+    log.info(f"    읽기+파싱 완료  {cnt:,}건  ({time.time()-t1:.1f}초)")
     return cnt
 
 
