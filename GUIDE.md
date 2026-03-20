@@ -119,7 +119,7 @@ python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -v
 | `--job FILE [...]` | `-j` | JOB 파일 경로 (필수) | |
 | `--skip-load` | | LOAD 단계 생략 | OFF |
 | `--verbose` | `-v` | DEBUG 로그 콘솔 출력 | OFF |
-| `--stage STAGE [...]` | `-s` | 특정 단계만 실행 (load/logic/validate/export) | 전체 |
+| `--stage STAGE [...]` | `-s` | 특정 단계만 실행 (prejob/load/logic/validate/export) | 전체 |
 | `--tables TBL [...]` | `-t` | 로드할 테이블만 지정 | 전체 |
 | `--load-timeout SEC` | | 테이블당 최대 읽기 시간(초), 0=무제한 | 300 |
 
@@ -137,7 +137,38 @@ python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -s load -t fio841
 
 # export만 재실행
 python sas_to_duckdb.py --ym 202601 --job jobs/job2.py -s export
+
+# prejob(FTP 다운로드 등)만 실행
+python sas_to_duckdb.py --ym 202601 --job jobs/job_ftp.py -s prejob
+
+# prejob + load만
+python sas_to_duckdb.py --ym 202601 --job jobs/job_ftp.py -s prejob load
 ```
+
+### prejob — LOAD 전 사전 작업 (FTP 다운로드 등)
+
+JOB 파일에 `prejob(yyyymm)` 함수를 정의하면 LOAD 전에 자동 실행됩니다.
+정의하지 않으면 건너뜁니다 (기존 job 파일은 수정 불필요).
+
+```python
+from ftplib import FTP
+from pathlib import Path
+from sas_to_duckdb import ROOT
+
+def prejob(yyyymm):
+    """LOAD 전에 FTP에서 파일 다운로드"""
+    local_dir = ROOT / "data" / yyyymm
+    local_dir.mkdir(parents=True, exist_ok=True)
+
+    with FTP("서버주소") as ftp:
+        ftp.login("아이디", "비밀번호")
+        ftp.cwd("/서버/폴더/경로")
+        for fname in ftp.nlst():
+            with open(local_dir / fname, "wb") as f:
+                ftp.retrbinary(f"RETR {fname}", f.write)
+```
+
+실행 순서: **PREJOB → LOAD → LOGIC → VALIDATE → EXPORT**
 
 ---
 
@@ -205,6 +236,23 @@ TABLES = {                          # 테이블 정의 (필수)
         "numeric": ["AMT"],         # 대부분 자동 감지, 추가 캐스팅 필요 시 지정
         # cols 불필요 — sas7bdat는 파일 내 컬럼 메타데이터 사용
     },
+    # ── 유형E: 파일명에 날짜가 붙는 경우 (glob 패턴) ──
+    # btLtrJ930_020_20260228_20260308.dat.gz 처럼 날짜가 변하는 파일
+    "bt930_020": {
+        "type": "pipe",
+        "file": "btLtrJ930_020_{yyyymm}*_*.dat.gz",   # ← * 와일드카드 사용
+        "desc": "930_020 (all 제외)",
+        "month_col": None,
+        "cols": ["COL1", "COL2", "COL3"],
+    },
+    "bt930_020_all": {
+        "type": "pipe",
+        "file": "btLtrJ930_020_all_{yyyymm}*_*.dat.gz",  # ← _all 포함
+        "desc": "930_020 전체(all)",
+        "month_col": None,
+        "cols": ["COL1", "COL2", "COL3"],
+    },
+
     # ── 유형D: Oracle DB ──
     # 접속정보는 oracle_config.py에서 관리
     "ora_table": {
