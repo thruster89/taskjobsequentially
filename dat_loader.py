@@ -20,6 +20,7 @@ import time
 import pandas as pd
 from io import TextIOWrapper
 from pathlib import Path
+from charset_normalizer import from_bytes
 
 try:
     import pyreadstat
@@ -34,9 +35,62 @@ ENCODINGS = ["cp949", "utf-8"]
 DUCKDB_ENCODINGS = ["utf-8", "euc_kr", "cp949"]
 
 
+# charset_normalizer 결과 → DuckDB 호환 인코딩 매핑
+_ENC_MAP = {
+    "euc-kr": "euc_kr", "euckr": "euc_kr", "cp949": "euc_kr",
+    "utf-8": "utf-8", "ascii": "utf-8", "utf8": "utf-8",
+}
+
+def _detect_file_encoding(path, sample_bytes=256_000):
+    """
+    파일 앞부분 바이트를 읽어서 인코딩을 감지한다.
+    charset_normalizer 사용 — DuckDB SQL 실행 없이 순수 바이트 분석.
+
+    Returns: (감지된 인코딩, 신뢰도)
+    """
+    f = open_file_binary(path)
+    try:
+        raw = f.read(sample_bytes)
+    finally:
+        f.close()
+
+    result = from_bytes(raw)
+    best = result.best()
+    if best is None:
+        return "utf-8", 0.0
+    detected = best.encoding.lower().replace("-", "").replace("_", "")
+    # 정규화
+    for key, val in _ENC_MAP.items():
+        if detected == key.replace("-", "").replace("_", ""):
+            return val, best.encoding  # (DuckDB 호환 이름, 원본 감지명)
+    return best.encoding, best.encoding
+
+
 def _detect_duckdb_encoding(con, path, enc_list=None):
-    """샘플 100줄로 인코딩을 빠르게 감지 (대용량 파일 전체 읽기 방지)"""
+    """
+    1차: charset_normalizer로 바이트 기반 감지 (빠름)
+    2차: 실패 시 DuckDB LIMIT 100 폴백 (기존 방식)
+    """
     enc_list = enc_list or DUCKDB_ENCODINGS
+
+    # 1차: 바이트 기반 감지
+    try:
+        detected, raw_name = _detect_file_encoding(path)
+        # DuckDB에서 지원하는 인코딩인지 확인
+        if detected in enc_list or detected.replace("-", "_") in enc_list:
+            log.info(f"    인코딩 자동감지: {raw_name} → {detected}")
+            return detected
+        # 감지 결과가 enc_list에 없으면 매핑 시도
+        normalized = detected.lower().replace("-", "_")
+        for enc in enc_list:
+            if enc.lower().replace("-", "_") == normalized:
+                log.info(f"    인코딩 자동감지: {raw_name} → {enc}")
+                return enc
+        log.info(f"    인코딩 자동감지 결과({raw_name})가 DuckDB 미지원 → DuckDB 폴백 감지")
+    except Exception as e:
+        log.info(f"    인코딩 자동감지 실패({e}) → DuckDB 폴백 감지")
+
+    # 2차: DuckDB LIMIT 100 폴백
     for enc in enc_list:
         try:
             con.execute(f"""
