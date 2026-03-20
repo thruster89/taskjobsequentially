@@ -109,6 +109,36 @@ FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz",
 PREFIX_OUT = "out_"
 
 
+def _get_total_ram():
+    """시스템 전체 RAM(bytes) 반환. Windows/Linux 모두 지원."""
+    # os.sysconf (Linux)
+    try:
+        return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+    except (AttributeError, ValueError):
+        pass
+    # ctypes (Windows) — 외부 패키지 불필요
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong),
+                        ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong),
+                        ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong),
+                        ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong),
+                        ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(stat)
+        if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return stat.ullTotalPhys
+    except Exception:
+        pass
+    return None
+
+
 # ══════════════════════════════════════════════
 # 유틸 (JOB 파일에서도 import하여 사용)
 # ══════════════════════════════════════════════
@@ -1125,15 +1155,14 @@ def main():
     # 순차 실행: ym → job 순서
     con = duckdb.connect(str(db_path))
     # 시스템 RAM 75%를 DuckDB에 할당 (디스크 스필 최소화)
-    try:
-        total_ram = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
-        mem_limit = int(total_ram * 0.75) // (1024 ** 3)
-        mem_limit = max(mem_limit, 4)  # 최소 4GB
+    total_ram = _get_total_ram()
+    if total_ram:
+        mem_limit = max(int(total_ram * 0.75) // (1024 ** 3), 4)
         con.execute(f"SET memory_limit = '{mem_limit}GB'")
         log.info(f"DuckDB memory_limit = {mem_limit}GB (시스템 RAM {total_ram // (1024**3)}GB의 75%)")
-    except Exception:
+    else:
         con.execute("SET memory_limit = '4GB'")
-        log.info("DuckDB memory_limit = 4GB (폴백)")
+        log.info("DuckDB memory_limit = 4GB (RAM 감지 실패, 폴백)")
     con.execute("SET temp_directory = 'duckdb_tmp'")
     try:
         t_total = time.time()
