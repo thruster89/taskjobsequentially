@@ -514,6 +514,12 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         t0 = time.time()
         enc = _detect_duckdb_encoding(con, path, enc_list)
         log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
+        # non-utf8 → 사전 변환하여 DuckDB 멀티스레드 활용
+        # DuckDB는 utf-8/latin1만 멀티스레드, cp949/euc_kr은 싱글스레드
+        if enc.lower().replace("-", "").replace("_", "") not in ("utf8", "ascii", "latin1"):
+            log.info(f"    non-utf8({enc}) → utf-8 사전 변환 (DuckDB 멀티스레드 활용)")
+            path = decompress_gz(path)
+            enc = "utf-8"
 
     # 2단계: 실제 컬럼 수 감지 → 필요한 것만 SELECT (중간 테이블 없이 1단계)
     t1 = time.time()
