@@ -1182,6 +1182,8 @@ def main():
         con.execute("SET memory_limit = '4GB'")
         log.info("DuckDB memory_limit = 4GB (RAM 감지 실패, 폴백)")
     con.execute("SET temp_directory = 'duckdb_tmp'")
+    con.execute("SET preserve_insertion_order = false")
+    log.info("DuckDB preserve_insertion_order = false (병렬 읽기 최적화)")
     try:
         con.execute("LOAD encodings")
         log.info("DuckDB encodings 확장 로드 (cp949 직접 지원)")

@@ -502,13 +502,42 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # ── fast 모드: gz 해제 + utf-8 변환 → 인코딩 감지 스킵 ──
+    # ── fast 모드: .gz를 DuckDB가 직접 읽기 (사전 해제 불필요) ──
     # fast=True 명시 또는 .gz 파일이면 자동 적용 (fast=False 명시 시 제외)
     use_fast = fast if fast is not None else str(path).endswith('.gz')
-    if use_fast:
-        path = decompress_gz(path)
-        enc = "utf-8"
-        log.info(f"    fast 모드: utf-8 사전 변환 완료 → 인코딩 감지 스킵")
+    is_gz = str(path).endswith('.gz')
+
+    if use_fast and is_gz:
+        # .gz → 가능하면 DuckDB가 네이티브로 직접 읽음 (decompress_gz 스킵)
+        t0 = time.time()
+        detected, raw_name = _detect_file_encoding(path)
+        is_utf8 = detected.lower().replace("-", "").replace("_", "") in ("utf8", "ascii")
+        if is_utf8:
+            enc = "utf-8"
+            log.info(f"    fast 모드: .gz 직접 읽기 (utf-8, {time.time()-t0:.1f}초)")
+        else:
+            # cp949/euc-kr: encodings 확장이 euc_kr을 지원하는지 사전 확인
+            has_euc_kr = False
+            try:
+                con.execute("LOAD encodings")
+                con.execute("SELECT encode('테스트')::BLOB")  # encodings 확장 동작 확인
+                has_euc_kr = True
+            except Exception:
+                pass
+            if has_euc_kr:
+                enc = "euc_kr"
+                log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → euc_kr, {time.time()-t0:.1f}초)")
+            else:
+                # encodings 확장 미지원 → 즉시 decompress_gz 폴백 (대기 없음)
+                log.info(f"    fast 모드: euc_kr 미지원 → decompress_gz 사전 변환 ({time.time()-t0:.1f}초)")
+                path = decompress_gz(path)
+                enc = "utf-8"
+                is_gz = False  # 이미 해제됨, 하위 폴백 방지
+    elif use_fast and not is_gz:
+        # 비-gz 파일: 인코딩 감지만
+        t0 = time.time()
+        enc = _detect_duckdb_encoding(con, path, enc_list)
+        log.info(f"    fast 모드: 인코딩 감지 {enc}  ({time.time()-t0:.1f}초)")
     else:
         # 1단계: 인코딩 감지
         t0 = time.time()
@@ -612,6 +641,36 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             break
         else:
             if try_enc == remaining[-1] if remaining else try_enc == enc:
+                # .gz 직접 읽기 실패 시 decompress_gz 폴백
+                if is_gz and use_fast:
+                    log.info(f"    .gz 직접 읽기 실패 → decompress_gz 폴백: {exec_error[0]}")
+                    path = decompress_gz(path)
+                    enc = "utf-8"
+                    # 폴백 경로로 재시도
+                    exec_error[0] = None
+                    done_event = threading.Event()
+                    fallback_sql = f"""
+                        CREATE OR REPLACE TABLE {out_table} AS
+                        SELECT {select_clause}
+                        FROM read_csv('{path}',
+                            delim        = '{delimiter}',
+                            header       = false,
+                            encoding     = 'utf-8',
+                            null_padding = true,
+                            auto_detect  = false,
+                            columns      = {{{col_map}}})
+                    """
+                    monitor = threading.Thread(target=_progress_monitor,
+                                               args=(file_size, time.time()),
+                                               daemon=True)
+                    monitor.start()
+                    worker = threading.Thread(target=_run_query, args=(fallback_sql,))
+                    worker.start()
+                    worker.join()
+                    done_event.set()
+                    if exec_error[0] is not None:
+                        raise exec_error[0]
+                    break
                 raise exec_error[0]
             log.info(f"    인코딩 {try_enc} 읽기 실패, 재시도: {exec_error[0]}")
             continue
