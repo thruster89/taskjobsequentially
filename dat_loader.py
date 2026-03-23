@@ -481,7 +481,7 @@ def read_pipe_dat(
 
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                      delimiter: str = "|", encodings: list = None,
-                     fast: bool = None):
+                     fast: bool = None, target_table: str = None):
     """
     DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -495,6 +495,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 True → 강제 적용, False → 강제 미적용.
                 gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
                 인코딩 감지·euc_kr 디코딩 오버헤드를 건너뛰어 빨라짐.
+    target_table : 지정 시 임시 테이블 대신 이 테이블에 직접 적재 (메모리 절약)
 
     Returns: 건수 (int)
     """
@@ -576,8 +577,9 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             except Exception as e:
                 exec_error[0] = e
 
+        out_table = target_table or "_pipe_parsed"
         sql = f"""
-            CREATE OR REPLACE TEMP TABLE _pipe_parsed AS
+            CREATE OR REPLACE TABLE {out_table} AS
             SELECT {select_clause}
             FROM read_csv('{path}',
                 delim        = '{delimiter}',
@@ -608,7 +610,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             log.info(f"    인코딩 {try_enc} 읽기 실패, 재시도: {exec_error[0]}")
             continue
 
-    cnt = con.execute("SELECT COUNT(*) FROM _pipe_parsed").fetchone()[0]
+    cnt = con.execute(f"SELECT COUNT(*) FROM {out_table}").fetchone()[0]
     log.info(f"    읽기+파싱 완료  {cnt:,}건  ({time.time()-t1:.1f}초)")
     return cnt
 
