@@ -40,18 +40,18 @@ DUCKDB_ENCODINGS = ["utf-8", "cp949", "euc_kr"]
 
 
 # charset_normalizer 결과 → DuckDB 호환 인코딩 매핑
+# cp949는 euc-kr 상위호환(~13,000자 vs ~7,000자)이므로 cp949로 통일
 # Big5(중국어 번체)는 cp949와 바이트 범위가 겹쳐서 한국어 파일을 오탐하는 경우가 많음
 _ENC_MAP = {
-    "euc-kr": "euc_kr", "euckr": "euc_kr", "cp949": "euc_kr",
-    "big5": "euc_kr", "big5hkscs": "euc_kr",   # 한국어 오탐 보정
+    "euc-kr": "cp949", "euckr": "cp949", "cp949": "cp949",
+    "big5": "cp949", "big5hkscs": "cp949",   # 한국어 오탐 보정
     # latin1(iso-8859-1)은 0x00-0xFF 모든 바이트를 허용하므로
     # charset_normalizer가 "판별 불가"일 때 latin1을 반환하는 경우가 많음.
-    # 한국어 파일에서는 거의 항상 cp949/euc_kr이므로 euc_kr로 매핑하여
-    # DuckDB 폴백(파일 다중 읽기) 병목을 방지한다.
-    "latin-1": "euc_kr", "latin1": "euc_kr",
-    "iso-8859-1": "euc_kr", "iso88591": "euc_kr",
-    "windows-1252": "euc_kr", "windows1252": "euc_kr",
-    "cp1252": "euc_kr",
+    # 한국어 파일에서는 거의 항상 cp949이므로 cp949로 매핑.
+    "latin-1": "cp949", "latin1": "cp949",
+    "iso-8859-1": "cp949", "iso88591": "cp949",
+    "windows-1252": "cp949", "windows1252": "cp949",
+    "cp1252": "cp949",
     "utf-8": "utf-8", "ascii": "utf-8", "utf8": "utf-8",
 }
 
@@ -528,20 +528,22 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             enc = "utf-8"
             log.info(f"    fast 모드: .gz 직접 읽기 (utf-8, {time.time()-t0:.1f}초)")
         else:
-            # cp949/euc-kr: encodings 확장이 euc_kr을 지원하는지 사전 확인
-            has_euc_kr = False
+            # cp949: encodings 확장이 cp949를 지원하는지 사전 확인
+            has_cp949 = False
             try:
+                con.execute("INSTALL encodings")
                 con.execute("LOAD encodings")
-                con.execute("SELECT encode('테스트')::BLOB")  # encodings 확장 동작 확인
-                has_euc_kr = True
+                # cp949 인코딩 실제 동작 확인
+                con.execute("SELECT '테스트'::BLOB")
+                has_cp949 = True
             except Exception:
                 pass
-            if has_euc_kr:
-                enc = "euc_kr"
-                log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → euc_kr, {time.time()-t0:.1f}초)")
+            if has_cp949:
+                enc = "cp949"
+                log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → cp949, {time.time()-t0:.1f}초)")
             else:
                 # encodings 확장 미지원 → 즉시 decompress_gz 폴백 (대기 없음)
-                log.info(f"    fast 모드: euc_kr 미지원 → decompress_gz 사전 변환 ({time.time()-t0:.1f}초)")
+                log.info(f"    fast 모드: cp949 미지원 → decompress_gz 사전 변환 ({time.time()-t0:.1f}초)")
                 path = decompress_gz(path)
                 enc = "utf-8"
                 is_gz = False  # 이미 해제됨, 하위 폴백 방지
