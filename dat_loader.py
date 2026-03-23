@@ -35,7 +35,6 @@ except ImportError:
 # 인코딩 fallback 순서
 ENCODINGS = ["cp949", "utf-8"]
 # DuckDB 네이티브 읽기용 인코딩 순서
-# encodings 확장 설치 시 cp949 직접 지원, 없으면 euc_kr 폴백
 DUCKDB_ENCODINGS = ["utf-8", "cp949", "euc_kr"]
 
 
@@ -528,31 +527,12 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             enc = "utf-8"
             log.info(f"    fast 모드: .gz 직접 읽기 (utf-8, {time.time()-t0:.1f}초)")
         else:
-            # cp949: encodings 확장 로드 + cp949 지원 확인
-            has_cp949 = False
-            try:
-                con.execute("LOAD encodings")
-                has_cp949 = True
-            except Exception as e:
-                # 확장 미설치 시 설치 시도
-                try:
-                    con.execute("INSTALL encodings")
-                    con.execute("LOAD encodings")
-                    has_cp949 = True
-                except Exception as e2:
-                    log.debug(f"    encodings 확장 로드 실패: {e2}")
-            if has_cp949:
-                # .gz + cp949 직접 읽기는 DuckDB 크래시 유발 → 먼저 해제 후 cp949로 읽기
-                log.info(f"    fast 모드: .gz 해제 후 cp949 읽기 (인코딩: {raw_name} → cp949, {time.time()-t0:.1f}초)")
-                path = decompress_gz(path)
-                enc = "cp949"
-                is_gz = False
-            else:
-                # encodings 확장 미지원 → 즉시 decompress_gz 폴백 (대기 없음)
-                log.info(f"    fast 모드: cp949 미지원 → decompress_gz 사전 변환 ({time.time()-t0:.1f}초)")
-                path = decompress_gz(path)
-                enc = "utf-8"
-                is_gz = False  # 이미 해제됨, 하위 폴백 방지
+            # non-utf8(cp949 등) → decompress_gz로 해제 + utf-8 변환
+            # DuckDB read_csv는 .gz + cp949 조합에서 크래시하므로 직접 읽기 불가
+            log.info(f"    fast 모드: .gz 해제 + utf-8 변환 (인코딩: {raw_name}, {time.time()-t0:.1f}초)")
+            path = decompress_gz(path)
+            enc = "utf-8"
+            is_gz = False
     elif use_fast and not is_gz:
         # 비-gz 파일: 인코딩 감지만
         t0 = time.time()
