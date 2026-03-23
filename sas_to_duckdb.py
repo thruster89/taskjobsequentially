@@ -648,27 +648,43 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                                       fast=cfg.get("fast", False))
                 tmp_table = "_csv_parsed"
             else:  # pipe
-                cnt = read_pipe_duckdb(con, path, cfg["cols"],
-                                       cfg.get("numeric"),
-                                       cfg.get("delimiter", "|"),
-                                       encodings=encs,
-                                       fast=cfg.get("fast", False))
-                tmp_table = "_pipe_parsed"
+                month_col = cfg.get("month_col")
+                exists = table_exists(con, name)
+                # month_col 부분교체: 임시 테이블 경유 (기존 데이터 보존)
+                # 그 외(신규 or 전체교체): 최종 테이블에 직접 적재 (메모리 절약)
+                if exists and month_col:
+                    cnt = read_pipe_duckdb(con, path, cfg["cols"],
+                                           cfg.get("numeric"),
+                                           cfg.get("delimiter", "|"),
+                                           encodings=encs,
+                                           fast=cfg.get("fast", False))
+                    tmp_table = "_pipe_parsed"
+                else:
+                    if exists:
+                        con.execute(f"DROP TABLE {name}")
+                    cnt = read_pipe_duckdb(con, path, cfg["cols"],
+                                           cfg.get("numeric"),
+                                           cfg.get("delimiter", "|"),
+                                           encodings=encs,
+                                           fast=cfg.get("fast", False),
+                                           target_table=name)
+                    tmp_table = None
 
             if timer:
                 timer.cancel()
 
-            # tmp → 실제 테이블로 upsert
-            month_col = cfg.get("month_col")
-            if not table_exists(con, name):
-                con.execute(f"CREATE TABLE {name} AS SELECT * FROM {tmp_table}")
-            else:
-                if month_col:
-                    con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
+            # tmp → 실제 테이블로 upsert (pipe 직접 적재 시 스킵)
+            if tmp_table is not None:
+                month_col = cfg.get("month_col")
+                if not table_exists(con, name):
+                    con.execute(f"CREATE TABLE {name} AS SELECT * FROM {tmp_table}")
                 else:
-                    con.execute(f"DELETE FROM {name}")
-                con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
-            con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
+                    if month_col:
+                        con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
+                    else:
+                        con.execute(f"DELETE FROM {name}")
+                    con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
+                con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
             log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             loaded.append(name)
         except Exception as e:

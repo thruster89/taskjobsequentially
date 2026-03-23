@@ -18,6 +18,8 @@ import zipfile
 import json
 import argparse
 import logging
+import os
+import threading
 import time
 import pandas as pd
 from io import TextIOWrapper
@@ -479,7 +481,7 @@ def read_pipe_dat(
 
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                      delimiter: str = "|", encodings: list = None,
-                     fast: bool = None):
+                     fast: bool = None, target_table: str = None):
     """
     DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -493,6 +495,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 True → 강제 적용, False → 강제 미적용.
                 gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
                 인코딩 감지·euc_kr 디코딩 오버헤드를 건너뛰어 빨라짐.
+    target_table : 지정 시 임시 테이블 대신 이 테이블에 직접 적재 (메모리 절약)
 
     Returns: 건수 (int)
     """
@@ -546,32 +549,68 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             base = f"TRY_CAST({base} AS DOUBLE)"
         exprs.append(f"{base} AS {name}")
     select_clause = ", ".join(exprs)
-    log.info(f"    읽기 시작 (PIPE direct, enc={enc}, {n_cols}/{total_cols}개 컬럼)")
+    # 읽을 파일 크기 (gz면 원본 크기를 알 수 없으므로 압축 크기 사용)
+    try:
+        file_size = os.path.getsize(str(path))
+    except OSError:
+        file_size = 0
+    size_label = f"{file_size/1024**3:.1f}GB" if file_size > 1024**3 else f"{file_size/1024**2:.0f}MB"
+    log.info(f"    읽기 시작 (PIPE direct, enc={enc}, {n_cols}/{total_cols}개 컬럼, {size_label})")
 
     remaining = [e for e in enc_list if e != enc]
     for try_enc in [enc] + remaining:
-        try:
-            con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE _pipe_parsed AS
-                SELECT {select_clause}
-                FROM read_csv('{path}',
-                    delim        = '{delimiter}',
-                    header       = false,
-                    encoding     = '{try_enc}',
-                    null_padding = true,
-                    auto_detect  = false,
-                    columns      = {{{col_map}}})
-            """)
+        # 진행률 모니터: 별도 스레드에서 DuckDB tmp 디렉토리 크기 변화 추적
+        done_event = threading.Event()
+        exec_error = [None]
+
+        def _progress_monitor(fsize, t_start, interval=30):
+            """30초마다 경과시간 + 처리 속도 로깅"""
+            last_log = t_start
+            while not done_event.wait(timeout=interval):
+                elapsed = time.time() - t_start
+                mins, secs = divmod(int(elapsed), 60)
+                log.info(f"    ⏳ 진행 중… {mins}분 {secs:02d}초 경과 ({size_label})")
+
+        def _run_query(sql):
+            try:
+                con.execute(sql)
+            except Exception as e:
+                exec_error[0] = e
+
+        out_table = target_table or "_pipe_parsed"
+        sql = f"""
+            CREATE OR REPLACE TABLE {out_table} AS
+            SELECT {select_clause}
+            FROM read_csv('{path}',
+                delim        = '{delimiter}',
+                header       = false,
+                encoding     = '{try_enc}',
+                null_padding = true,
+                auto_detect  = false,
+                columns      = {{{col_map}}})
+        """
+
+        monitor = threading.Thread(target=_progress_monitor,
+                                   args=(file_size, time.time()),
+                                   daemon=True)
+        monitor.start()
+
+        worker = threading.Thread(target=_run_query, args=(sql,))
+        worker.start()
+        worker.join()
+        done_event.set()
+
+        if exec_error[0] is None:
             if try_enc != enc:
                 log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
             break
-        except Exception as e:
+        else:
             if try_enc == remaining[-1] if remaining else try_enc == enc:
-                raise
-            log.info(f"    인코딩 {try_enc} 읽기 실패, 재시도: {e}")
+                raise exec_error[0]
+            log.info(f"    인코딩 {try_enc} 읽기 실패, 재시도: {exec_error[0]}")
             continue
 
-    cnt = con.execute("SELECT COUNT(*) FROM _pipe_parsed").fetchone()[0]
+    cnt = con.execute(f"SELECT COUNT(*) FROM {out_table}").fetchone()[0]
     log.info(f"    읽기+파싱 완료  {cnt:,}건  ({time.time()-t1:.1f}초)")
     return cnt
 
