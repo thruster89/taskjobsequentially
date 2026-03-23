@@ -528,16 +528,19 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             enc = "utf-8"
             log.info(f"    fast 모드: .gz 직접 읽기 (utf-8, {time.time()-t0:.1f}초)")
         else:
-            # cp949: encodings 확장이 cp949를 지원하는지 사전 확인
+            # cp949: encodings 확장 로드 + cp949 지원 확인
             has_cp949 = False
             try:
-                con.execute("INSTALL encodings")
                 con.execute("LOAD encodings")
-                # cp949 인코딩 실제 동작 확인
-                con.execute("SELECT '테스트'::BLOB")
                 has_cp949 = True
-            except Exception:
-                pass
+            except Exception as e:
+                # 확장 미설치 시 설치 시도
+                try:
+                    con.execute("INSTALL encodings")
+                    con.execute("LOAD encodings")
+                    has_cp949 = True
+                except Exception as e2:
+                    log.debug(f"    encodings 확장 로드 실패: {e2}")
             if has_cp949:
                 enc = "cp949"
                 log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → cp949, {time.time()-t0:.1f}초)")
