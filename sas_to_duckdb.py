@@ -658,7 +658,8 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                                            cfg.get("delimiter", "|"),
                                            encodings=encs,
                                            fast=cfg.get("fast"),
-                                           preconvert=cfg.get("preconvert", False))
+                                           preconvert=cfg.get("preconvert", False),
+                                           select_cols=cfg.get("select_cols"))
                     tmp_table = "_pipe_parsed"
                 else:
                     if exists:
@@ -669,7 +670,8 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                                            encodings=encs,
                                            fast=cfg.get("fast"),
                                            target_table=name,
-                                           preconvert=cfg.get("preconvert", False))
+                                           preconvert=cfg.get("preconvert", False),
+                                           select_cols=cfg.get("select_cols"))
                     tmp_table = None
 
             if timer:
