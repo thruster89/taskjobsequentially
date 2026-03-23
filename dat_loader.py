@@ -512,15 +512,32 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         enc = _detect_duckdb_encoding(con, path, enc_list)
         log.info(f"    인코딩 감지: {enc}  ({time.time()-t0:.1f}초)")
 
-    # 2단계: 필요한 컬럼만 정의 → 1회 CREATE TABLE로 바로 파싱
+    # 2단계: 실제 컬럼 수 감지 → 필요한 것만 SELECT (중간 테이블 없이 1단계)
     t1 = time.time()
     n_cols = len(col_names)
 
-    # 필요한 컬럼만 정의 (strict_mode=false → 파일에 더 많은 필드가 있어도 무시)
-    col_map = ", ".join(f"column{i:02d}: 'VARCHAR'" for i in range(n_cols))
-    log.info(f"    읽기 시작 (PIPE direct, enc={enc}, 정의 {n_cols}개 컬럼)")
+    # 샘플 1줄로 실제 파이프 수(=컬럼 수) 파악
+    actual_cols = n_cols
+    try:
+        f = open_file_binary(path)
+        try:
+            first_line = f.readline(1024 * 1024)
+        finally:
+            f.close()
+        if first_line:
+            delim_byte = delimiter.encode('ascii')
+            actual_cols = first_line.count(delim_byte) + 1
+            log.info(f"    샘플 파이프 수: {actual_cols - 1}개 → 컬럼 {actual_cols}개")
+    except Exception as e:
+        log.info(f"    샘플 컬럼 수 감지 실패({e}), 정의 {n_cols}개 사용")
 
-    # SELECT 표현식: TRIM + 숫자 캐스팅 + 리네임을 read_csv 위에서 바로 수행
+    # 실제 컬럼 수만큼 columns 정의 (스니퍼 불일치 방지)
+    total_cols = max(actual_cols, n_cols)
+    col_map = ", ".join(f"column{i:02d}: 'VARCHAR'" for i in range(total_cols))
+    if actual_cols != n_cols:
+        log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개 → {total_cols}개로 읽기")
+
+    # SELECT 표현식: 필요한 n_cols개만 TRIM + 캐스팅 + 리네임
     exprs = []
     for i, name in enumerate(col_names):
         src = f"column{i:02d}"
@@ -529,6 +546,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             base = f"TRY_CAST({base} AS DOUBLE)"
         exprs.append(f"{base} AS {name}")
     select_clause = ", ".join(exprs)
+    log.info(f"    읽기 시작 (PIPE direct, enc={enc}, {n_cols}/{total_cols}개 컬럼)")
 
     remaining = [e for e in enc_list if e != enc]
     for try_enc in [enc] + remaining:
@@ -541,7 +559,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                     header       = false,
                     encoding     = '{try_enc}',
                     null_padding = true,
-                    strict_mode  = false,
+                    auto_detect  = false,
                     columns      = {{{col_map}}})
             """)
             if try_enc != enc:
