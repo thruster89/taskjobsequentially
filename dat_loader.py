@@ -481,7 +481,7 @@ def read_pipe_dat(
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                      delimiter: str = "|", encodings: list = None,
                      fast: bool = None, target_table: str = None,
-                     preconvert: bool = False):
+                     preconvert: bool = False, select_cols: list = None):
     """
     DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -498,6 +498,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     target_table : 지정 시 임시 테이블 대신 이 테이블에 직접 적재 (메모리 절약)
     preconvert   : True → 인코딩 감지 없이 바로 decompress_gz(cp949→utf-8) 변환 후 읽기.
                    DuckDB euc_kr 디코딩이 터지는 파일에 사용.
+    select_cols  : DB에 적재할 컬럼명 리스트. None이면 col_names 전체 적재.
 
     Returns: 건수 (int)
     """
@@ -575,11 +576,15 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     if actual_cols != n_cols:
         log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개 → {total_cols}개로 읽기")
 
-    # SELECT 표현식: 필요한 n_cols개만 TRIM + 캐스팅 + 리네임
+    # SELECT 표현식: select_cols 지정 시 해당 컬럼만, 미지정 시 전체
+    use_cols = select_cols if select_cols else col_names
+    use_set = set(use_cols)
     exprs = []
     for i, name in enumerate(col_names):
+        if name not in use_set:
+            continue
         src = f"column{i:02d}"
-        base = f"TRIM({src})"
+        base = src
         if name in numeric_set:
             base = f"TRY_CAST({base} AS DOUBLE)"
         exprs.append(f"{base} AS {name}")
@@ -590,7 +595,8 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     except OSError:
         file_size = 0
     size_label = f"{file_size/1024**3:.1f}GB" if file_size > 1024**3 else f"{file_size/1024**2:.0f}MB"
-    log.info(f"    읽기 시작 (PIPE direct, enc={enc}, {n_cols}/{total_cols}개 컬럼, {size_label})")
+    out_cols = len(use_cols)
+    log.info(f"    읽기 시작 (PIPE direct, enc={enc}, {out_cols}/{total_cols}개 컬럼 적재, {size_label})")
 
     remaining = [e for e in enc_list if e != enc]
 
