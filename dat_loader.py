@@ -542,8 +542,11 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 except Exception as e2:
                     log.debug(f"    encodings 확장 로드 실패: {e2}")
             if has_cp949:
+                # .gz + cp949 직접 읽기는 DuckDB 크래시 유발 → 먼저 해제 후 cp949로 읽기
+                log.info(f"    fast 모드: .gz 해제 후 cp949 읽기 (인코딩: {raw_name} → cp949, {time.time()-t0:.1f}초)")
+                path = decompress_gz(path)
                 enc = "cp949"
-                log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → cp949, {time.time()-t0:.1f}초)")
+                is_gz = False
             else:
                 # encodings 확장 미지원 → 즉시 decompress_gz 폴백 (대기 없음)
                 log.info(f"    fast 모드: cp949 미지원 → decompress_gz 사전 변환 ({time.time()-t0:.1f}초)")
