@@ -541,7 +541,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                     header       = false,
                     encoding     = '{try_enc}',
                     null_padding = true,
-                    strict_mode  = false,
+                    auto_detect  = false,
                     columns      = {{{col_map}}})
             """)
             if try_enc != enc:
