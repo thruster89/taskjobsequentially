@@ -508,22 +508,31 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     is_gz = str(path).endswith('.gz')
 
     if use_fast and is_gz:
-        # .gz → DuckDB가 네이티브로 직접 읽음 (decompress_gz 스킵)
-        # 인코딩만 빠르게 감지
+        # .gz → 가능하면 DuckDB가 네이티브로 직접 읽음 (decompress_gz 스킵)
         t0 = time.time()
         detected, raw_name = _detect_file_encoding(path)
         is_utf8 = detected.lower().replace("-", "").replace("_", "") in ("utf8", "ascii")
         if is_utf8:
             enc = "utf-8"
+            log.info(f"    fast 모드: .gz 직접 읽기 (utf-8, {time.time()-t0:.1f}초)")
         else:
-            # cp949/euc-kr 파일은 encodings 확장이 있으면 직접 읽기, 없으면 사전 변환
+            # cp949/euc-kr: encodings 확장이 euc_kr을 지원하는지 사전 확인
+            has_euc_kr = False
             try:
                 con.execute("LOAD encodings")
+                con.execute("SELECT encode('테스트')::BLOB")  # encodings 확장 동작 확인
+                has_euc_kr = True
             except Exception:
                 pass
-            # euc_kr로 직접 읽기 시도 (encodings 확장 로드 시 가능)
-            enc = "euc_kr"
-        log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → {enc}, {time.time()-t0:.1f}초)")
+            if has_euc_kr:
+                enc = "euc_kr"
+                log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → euc_kr, {time.time()-t0:.1f}초)")
+            else:
+                # encodings 확장 미지원 → 즉시 decompress_gz 폴백 (대기 없음)
+                log.info(f"    fast 모드: euc_kr 미지원 → decompress_gz 사전 변환 ({time.time()-t0:.1f}초)")
+                path = decompress_gz(path)
+                enc = "utf-8"
+                is_gz = False  # 이미 해제됨, 하위 폴백 방지
     elif use_fast and not is_gz:
         # 비-gz 파일: 인코딩 감지만
         t0 = time.time()
