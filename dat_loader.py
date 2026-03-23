@@ -40,18 +40,18 @@ DUCKDB_ENCODINGS = ["utf-8", "cp949", "euc_kr"]
 
 
 # charset_normalizer 결과 → DuckDB 호환 인코딩 매핑
+# cp949는 euc-kr 상위호환(~13,000자 vs ~7,000자)이므로 cp949로 통일
 # Big5(중국어 번체)는 cp949와 바이트 범위가 겹쳐서 한국어 파일을 오탐하는 경우가 많음
 _ENC_MAP = {
-    "euc-kr": "euc_kr", "euckr": "euc_kr", "cp949": "euc_kr",
-    "big5": "euc_kr", "big5hkscs": "euc_kr",   # 한국어 오탐 보정
+    "euc-kr": "cp949", "euckr": "cp949", "cp949": "cp949",
+    "big5": "cp949", "big5hkscs": "cp949",   # 한국어 오탐 보정
     # latin1(iso-8859-1)은 0x00-0xFF 모든 바이트를 허용하므로
     # charset_normalizer가 "판별 불가"일 때 latin1을 반환하는 경우가 많음.
-    # 한국어 파일에서는 거의 항상 cp949/euc_kr이므로 euc_kr로 매핑하여
-    # DuckDB 폴백(파일 다중 읽기) 병목을 방지한다.
-    "latin-1": "euc_kr", "latin1": "euc_kr",
-    "iso-8859-1": "euc_kr", "iso88591": "euc_kr",
-    "windows-1252": "euc_kr", "windows1252": "euc_kr",
-    "cp1252": "euc_kr",
+    # 한국어 파일에서는 거의 항상 cp949이므로 cp949로 매핑.
+    "latin-1": "cp949", "latin1": "cp949",
+    "iso-8859-1": "cp949", "iso88591": "cp949",
+    "windows-1252": "cp949", "windows1252": "cp949",
+    "cp1252": "cp949",
     "utf-8": "utf-8", "ascii": "utf-8", "utf8": "utf-8",
 }
 
@@ -481,7 +481,8 @@ def read_pipe_dat(
 
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                      delimiter: str = "|", encodings: list = None,
-                     fast: bool = None, target_table: str = None):
+                     fast: bool = None, target_table: str = None,
+                     preconvert: bool = False):
     """
     DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -496,18 +497,29 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 gz 해제 + cp949→utf-8 사전 변환 후 utf-8 네이티브 읽기.
                 인코딩 감지·euc_kr 디코딩 오버헤드를 건너뛰어 빨라짐.
     target_table : 지정 시 임시 테이블 대신 이 테이블에 직접 적재 (메모리 절약)
+    preconvert   : True → 인코딩 감지 없이 바로 decompress_gz(cp949→utf-8) 변환 후 읽기.
+                   DuckDB euc_kr 디코딩이 터지는 파일에 사용.
 
     Returns: 건수 (int)
     """
     numeric_set = set(numeric or [])
     enc_list = encodings or DUCKDB_ENCODINGS
 
-    # ── fast 모드: .gz를 DuckDB가 직접 읽기 (사전 해제 불필요) ──
-    # fast=True 명시 또는 .gz 파일이면 자동 적용 (fast=False 명시 시 제외)
+    # ── fast 모드 / gz 여부 판별 ──
     use_fast = fast if fast is not None else str(path).endswith('.gz')
     is_gz = str(path).endswith('.gz')
 
-    if use_fast and is_gz:
+    # ── preconvert: 인코딩 감지 없이 바로 cp949→utf-8 변환 ──
+    if preconvert:
+        t0 = time.time()
+        log.info(f"    preconvert: decompress_gz 사전 변환 시작")
+        path = decompress_gz(path)
+        enc = "utf-8"
+        is_gz = False
+        log.info(f"    preconvert: utf-8 변환 완료 ({time.time()-t0:.1f}초)")
+
+    # ── fast 모드: .gz를 DuckDB가 직접 읽기 (사전 해제 불필요) ──
+    elif use_fast and is_gz:
         # .gz → 가능하면 DuckDB가 네이티브로 직접 읽음 (decompress_gz 스킵)
         t0 = time.time()
         detected, raw_name = _detect_file_encoding(path)
@@ -516,20 +528,22 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             enc = "utf-8"
             log.info(f"    fast 모드: .gz 직접 읽기 (utf-8, {time.time()-t0:.1f}초)")
         else:
-            # cp949/euc-kr: encodings 확장이 euc_kr을 지원하는지 사전 확인
-            has_euc_kr = False
+            # cp949: encodings 확장이 cp949를 지원하는지 사전 확인
+            has_cp949 = False
             try:
+                con.execute("INSTALL encodings")
                 con.execute("LOAD encodings")
-                con.execute("SELECT encode('테스트')::BLOB")  # encodings 확장 동작 확인
-                has_euc_kr = True
+                # cp949 인코딩 실제 동작 확인
+                con.execute("SELECT '테스트'::BLOB")
+                has_cp949 = True
             except Exception:
                 pass
-            if has_euc_kr:
-                enc = "euc_kr"
-                log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → euc_kr, {time.time()-t0:.1f}초)")
+            if has_cp949:
+                enc = "cp949"
+                log.info(f"    fast 모드: .gz 직접 읽기 (인코딩: {raw_name} → cp949, {time.time()-t0:.1f}초)")
             else:
                 # encodings 확장 미지원 → 즉시 decompress_gz 폴백 (대기 없음)
-                log.info(f"    fast 모드: euc_kr 미지원 → decompress_gz 사전 변환 ({time.time()-t0:.1f}초)")
+                log.info(f"    fast 모드: cp949 미지원 → decompress_gz 사전 변환 ({time.time()-t0:.1f}초)")
                 path = decompress_gz(path)
                 enc = "utf-8"
                 is_gz = False  # 이미 해제됨, 하위 폴백 방지
