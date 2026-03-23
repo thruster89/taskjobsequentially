@@ -593,87 +593,94 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     log.info(f"    읽기 시작 (PIPE direct, enc={enc}, {n_cols}/{total_cols}개 컬럼, {size_label})")
 
     remaining = [e for e in enc_list if e != enc]
-    for try_enc in [enc] + remaining:
-        # 진행률 모니터: 별도 스레드에서 DuckDB tmp 디렉토리 크기 변화 추적
-        done_event = threading.Event()
-        exec_error = [None]
 
-        def _progress_monitor(fsize, t_start, interval=30):
-            """30초마다 경과시간 + 처리 속도 로깅"""
-            last_log = t_start
-            while not done_event.wait(timeout=interval):
-                elapsed = time.time() - t_start
-                mins, secs = divmod(int(elapsed), 60)
-                log.info(f"    ⏳ 진행 중… {mins}분 {secs:02d}초 경과 ({size_label})")
+    def _progress_monitor(fsize, t_start, interval=30):
+        """30초마다 경과시간 + 처리 속도 로깅"""
+        while not _done_ev.wait(timeout=interval):
+            elapsed = time.time() - t_start
+            mins, secs = divmod(int(elapsed), 60)
+            log.info(f"    ⏳ 진행 중… {mins}분 {secs:02d}초 경과 ({size_label})")
 
-        def _run_query(sql):
-            try:
-                con.execute(sql)
-            except Exception as e:
-                exec_error[0] = e
+    _done_ev = threading.Event()
+    exec_error = [None]
 
-        out_table = target_table or "_pipe_parsed"
-        sql = f"""
+    def _run_query(q):
+        try:
+            con.execute(q)
+        except Exception as e:
+            exec_error[0] = e
+
+    out_table = target_table or "_pipe_parsed"
+
+    def _try_read_csv(read_path, read_enc):
+        """read_csv 실행 + 진행률 모니터. 성공 시 True, 실패 시 False."""
+        nonlocal _done_ev
+        exec_error[0] = None
+        _done_ev = threading.Event()
+        q = f"""
             CREATE OR REPLACE TABLE {out_table} AS
             SELECT {select_clause}
-            FROM read_csv('{path}',
+            FROM read_csv('{read_path}',
                 delim        = '{delimiter}',
                 header       = false,
-                encoding     = '{try_enc}',
+                encoding     = '{read_enc}',
                 null_padding = true,
                 auto_detect  = false,
                 columns      = {{{col_map}}})
         """
-
         monitor = threading.Thread(target=_progress_monitor,
                                    args=(file_size, time.time()),
                                    daemon=True)
         monitor.start()
-
-        worker = threading.Thread(target=_run_query, args=(sql,))
+        worker = threading.Thread(target=_run_query, args=(q,))
         worker.start()
         worker.join()
-        done_event.set()
+        _done_ev.set()
+        return exec_error[0] is None
 
-        if exec_error[0] is None:
-            if try_enc != enc:
-                log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
-            break
+    def _is_encoding_error(err):
+        """DuckDB 인코딩(바이트 시퀀스) 에러 여부 판별"""
+        msg = str(err).lower()
+        return ("unicode" in msg or "byte sequence" in msg
+                or "encoding" in msg or "invalid input" in msg)
+
+    # 1차: 감지된 인코딩으로 시도
+    success = _try_read_csv(path, enc)
+
+    if not success:
+        err = exec_error[0]
+        # 인코딩 에러면 다른 인코딩 재시도 없이 바로 decompress_gz 폴백
+        # (대용량 파일에서 다른 인코딩 재시도는 시간 낭비)
+        if _is_encoding_error(err):
+            log.info(f"    인코딩 {enc} 읽기 실패 (인코딩 에러) → decompress_gz 폴백: {err}")
+            conv_path = decompress_gz(path)
+            success = _try_read_csv(conv_path, "utf-8")
+            if not success:
+                raise exec_error[0]
         else:
-            if try_enc == remaining[-1] if remaining else try_enc == enc:
-                # .gz 직접 읽기 실패 시 decompress_gz 폴백
-                if is_gz and use_fast:
-                    log.info(f"    .gz 직접 읽기 실패 → decompress_gz 폴백: {exec_error[0]}")
-                    path = decompress_gz(path)
-                    enc = "utf-8"
-                    # 폴백 경로로 재시도
-                    exec_error[0] = None
-                    done_event = threading.Event()
-                    fallback_sql = f"""
-                        CREATE OR REPLACE TABLE {out_table} AS
-                        SELECT {select_clause}
-                        FROM read_csv('{path}',
-                            delim        = '{delimiter}',
-                            header       = false,
-                            encoding     = 'utf-8',
-                            null_padding = true,
-                            auto_detect  = false,
-                            columns      = {{{col_map}}})
-                    """
-                    monitor = threading.Thread(target=_progress_monitor,
-                                               args=(file_size, time.time()),
-                                               daemon=True)
-                    monitor.start()
-                    worker = threading.Thread(target=_run_query, args=(fallback_sql,))
-                    worker.start()
-                    worker.join()
-                    done_event.set()
-                    if exec_error[0] is not None:
+            # 인코딩 외 에러: 남은 인코딩으로 재시도
+            for try_enc in remaining:
+                log.info(f"    인코딩 {enc} 읽기 실패, {try_enc} 재시도: {err}")
+                success = _try_read_csv(path, try_enc)
+                if success:
+                    log.info(f"    인코딩 재시도 성공: {enc} → {try_enc}")
+                    break
+                err = exec_error[0]
+                if _is_encoding_error(err):
+                    # 재시도 중 인코딩 에러 발견 → 즉시 decompress_gz 폴백
+                    log.info(f"    인코딩 {try_enc} 읽기 실패 (인코딩 에러) → decompress_gz 폴백: {err}")
+                    conv_path = decompress_gz(path)
+                    success = _try_read_csv(conv_path, "utf-8")
+                    if not success:
                         raise exec_error[0]
                     break
-                raise exec_error[0]
-            log.info(f"    인코딩 {try_enc} 읽기 실패, 재시도: {exec_error[0]}")
-            continue
+            else:
+                # 모든 인코딩 실패 → decompress_gz 최종 폴백
+                log.info(f"    모든 인코딩 실패 → decompress_gz 최종 폴백")
+                conv_path = decompress_gz(path)
+                success = _try_read_csv(conv_path, "utf-8")
+                if not success:
+                    raise exec_error[0]
 
     cnt = con.execute(f"SELECT COUNT(*) FROM {out_table}").fetchone()[0]
     log.info(f"    읽기+파싱 완료  {cnt:,}건  ({time.time()-t1:.1f}초)")
