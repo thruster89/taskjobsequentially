@@ -548,6 +548,11 @@ def load_job_module(job_path: str):
     if not path.exists():
         raise FileNotFoundError(f"JOB 파일 없음: {path}")
 
+    # JOB 파일이 하위 폴더에 있어도 프로젝트 루트에서 import 가능하도록
+    root_str = str(ROOT)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
+
     spec = importlib.util.spec_from_file_location(path.stem, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
