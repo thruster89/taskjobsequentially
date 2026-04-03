@@ -1053,6 +1053,8 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
         if not tables:
             log.info(f"[{name}] TABLES 없음 — LOAD 스킵")
         else:
+            # TABLES 키의 {yyyymm} 치환 (only_tables 비교 전에 수행)
+            tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
             if only_tables:
                 unknown = set(only_tables) - set(tables)
                 if unknown:
