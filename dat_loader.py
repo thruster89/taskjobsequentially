@@ -502,7 +502,16 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
 
     Returns: 건수 (int)
     """
-    numeric_set = set(numeric or [])
+    # numeric: 리스트 → 전부 DOUBLE, 딕셔너리 → 컬럼별 타입 지정
+    numeric_set = set()
+    numeric_type = {}
+    if numeric:
+        if isinstance(numeric, dict):
+            numeric_set = set(numeric.keys())
+            numeric_type = numeric
+        else:
+            numeric_set = set(numeric)
+            numeric_type = {c: "DOUBLE" for c in numeric}
     enc_list = encodings or DUCKDB_ENCODINGS
 
     # ── fast 모드 / gz 여부 판별 ──
@@ -586,7 +595,8 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         src = f"column{i:02d}"
         base = src
         if name in numeric_set:
-            base = f"TRY_CAST({base} AS DOUBLE)"
+            cast_type = numeric_type[name]
+            base = f"TRY_CAST({base} AS {cast_type})"
         exprs.append(f"{base} AS {name}")
     select_clause = ", ".join(exprs)
     # 읽을 파일 크기 (gz면 원본 크기를 알 수 없으므로 압축 크기 사용)
