@@ -638,8 +638,6 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 delim        = '{delimiter}',
                 header       = false,
                 encoding     = '{read_enc}',
-                null_padding = false,
-                ignore_errors = true,
                 auto_detect  = false,
                 columns      = {{{col_map}}})
         """
