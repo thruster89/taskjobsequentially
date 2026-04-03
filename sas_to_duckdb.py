@@ -1168,10 +1168,6 @@ def main():
         job_paths.extend(str(f) for f in found)
 
     ym_list = args.ym
-    db_path = ROOT / "db" / DB_FILE
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    log.info(f"대상 월: {', '.join(ym_list)}")
-    log.info(f"DB    : {db_path}")
 
     # JOB 모듈 로드
     job_mods = []
@@ -1183,24 +1179,6 @@ def main():
             return
 
     # 순차 실행: ym → job 순서
-    con = duckdb.connect(str(db_path))
-    # 시스템 RAM 75%를 DuckDB에 할당 (디스크 스필 최소화)
-    total_ram = _get_total_ram()
-    if total_ram:
-        mem_limit = max(int(total_ram * 0.75) // (1024 ** 3), 4)
-        con.execute(f"SET memory_limit = '{mem_limit}GB'")
-        log.info(f"DuckDB memory_limit = {mem_limit}GB (시스템 RAM {total_ram // (1024**3)}GB의 75%)")
-    else:
-        con.execute("SET memory_limit = '4GB'")
-        log.info("DuckDB memory_limit = 4GB (RAM 감지 실패, 폴백)")
-    con.execute("SET temp_directory = 'duckdb_tmp'")
-    con.execute("SET preserve_insertion_order = false")
-    log.info("DuckDB preserve_insertion_order = false (병렬 읽기 최적화)")
-    try:
-        con.execute("LOAD encodings")
-        log.info("DuckDB encodings 확장 로드 (cp949 직접 지원)")
-    except Exception:
-        log.info("DuckDB encodings 확장 없음 — euc_kr 폴백 사용")
     try:
         t_total = time.time()
         failed_jobs = []
@@ -1208,27 +1186,59 @@ def main():
             if _shutdown.is_set():
                 log.warning("종료 요청으로 남은 월 건너뜀")
                 break
+
+            # 월별 DB 파일: db/YYYYMM.duckdb
+            db_path = ROOT / "db" / f"{yyyymm}.duckdb"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            log.info(f"대상 월: {yyyymm}")
+            log.info(f"DB    : {db_path}")
+
+            con = duckdb.connect(str(db_path))
+            total_ram = _get_total_ram()
+            if total_ram:
+                mem_limit = max(int(total_ram * 0.75) // (1024 ** 3), 4)
+                con.execute(f"SET memory_limit = '{mem_limit}GB'")
+                log.info(f"DuckDB memory_limit = {mem_limit}GB (시스템 RAM {total_ram // (1024**3)}GB의 75%)")
+            else:
+                con.execute("SET memory_limit = '4GB'")
+                log.info("DuckDB memory_limit = 4GB (RAM 감지 실패, 폴백)")
+            con.execute("SET temp_directory = 'duckdb_tmp'")
+            con.execute("SET preserve_insertion_order = false")
+            log.info("DuckDB preserve_insertion_order = false (병렬 읽기 최적화)")
+            try:
+                con.execute("LOAD encodings")
+                log.info("DuckDB encodings 확장 로드 (cp949 직접 지원)")
+            except Exception:
+                log.info("DuckDB encodings 확장 없음 — euc_kr 폴백 사용")
+
             if len(ym_list) > 1:
                 log.info("═" * 60)
                 log.info(f"▶ 월별 실행 시작: {yyyymm}")
                 log.info("═" * 60)
-            for mod in job_mods:
-                if _shutdown.is_set():
-                    log.warning("종료 요청으로 남은 JOB 건너뜀")
-                    break
-                try:
-                    run_job(con, mod, yyyymm, skip_load=args.skip_load,
-                            stages=args.stage, only_tables=args.tables,
-                            load_timeout=args.load_timeout)
-                except Exception as e:
-                    name = getattr(mod, "NAME", str(mod))
-                    log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")
-                    failed_jobs.append(f"{yyyymm}/{name}")
+
+            try:
+                for mod in job_mods:
+                    if _shutdown.is_set():
+                        log.warning("종료 요청으로 남은 JOB 건너뜀")
+                        break
+                    try:
+                        run_job(con, mod, yyyymm, skip_load=args.skip_load,
+                                stages=args.stage, only_tables=args.tables,
+                                load_timeout=args.load_timeout)
+                    except Exception as e:
+                        name = getattr(mod, "NAME", str(mod))
+                        log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")
+                        failed_jobs.append(f"{yyyymm}/{name}")
+            finally:
+                con.close()
+                log.info(f"DB 닫음: {db_path}")
+
         if failed_jobs:
             log.warning(f"실패한 JOB: {failed_jobs}")
         log.info(f"전체 완료  총 소요: {time.time()-t_total:.1f}초")
-    finally:
-        con.close()
+    except Exception as e:
+        log.error(f"예기치 않은 오류: {e}")
+        raise
 
 
 if __name__ == "__main__":

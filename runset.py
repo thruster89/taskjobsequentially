@@ -86,7 +86,7 @@ def main():
     print("[runset] sas_to_duckdb 로딩 중...")
     from sas_to_duckdb import (
         load_job_module, run_job, setup_logger,
-        _shutdown, _get_total_ram, ROOT, DB_FILE,
+        _shutdown, _get_total_ram, ROOT,
     )
     import duckdb
     print("[runset] 로딩 완료")
@@ -164,27 +164,6 @@ def main():
     if args.at_time:
         wait_until(args.at_time)
 
-    # DuckDB 연결 (sas_to_duckdb.py main()과 동일한 설정)
-    db_path = ROOT / "db" / DB_FILE
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    log.info(f"DB: {db_path}")
-
-    con = duckdb.connect(str(db_path))
-    total_ram = _get_total_ram()
-    if total_ram:
-        mem_limit = max(int(total_ram * 0.75) // (1024 ** 3), 4)
-        con.execute(f"SET memory_limit = '{mem_limit}GB'")
-        log.info(f"DuckDB memory_limit = {mem_limit}GB (시스템 RAM {total_ram // (1024**3)}GB의 75%)")
-    else:
-        con.execute("SET memory_limit = '4GB'")
-    con.execute("SET temp_directory = 'duckdb_tmp'")
-    con.execute("SET preserve_insertion_order = false")
-    try:
-        con.execute("LOAD encodings")
-        log.info("DuckDB encodings 확장 로드 (cp949 직접 지원)")
-    except Exception:
-        pass
-
     # JOB 모듈 사전 로드
     job_mods = []
     for job_cfg in jobs:
@@ -192,19 +171,41 @@ def main():
             job_mods.append((job_cfg, load_job_module(job_cfg["job"])))
         except (FileNotFoundError, AttributeError) as e:
             log.error(str(e))
-            con.close()
             sys.exit(1)
 
-    # 실행
+    # 실행: 월별로 DB 파일 분리 (YYYYMM.duckdb)
     t_total = time.time()
     results = []
 
-    try:
-        for yyyymm in ym_list:
-            if _shutdown.is_set():
-                log.warning("종료 요청으로 남은 월 건너뜀")
-                break
+    def _open_con(yyyymm):
+        """월별 DuckDB 연결 생성"""
+        db_path = ROOT / "db" / f"{yyyymm}.duckdb"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        log.info(f"DB: {db_path}")
+        c = duckdb.connect(str(db_path))
+        total_ram = _get_total_ram()
+        if total_ram:
+            mem_limit = max(int(total_ram * 0.75) // (1024 ** 3), 4)
+            c.execute(f"SET memory_limit = '{mem_limit}GB'")
+            log.info(f"DuckDB memory_limit = {mem_limit}GB (시스템 RAM {total_ram // (1024**3)}GB의 75%)")
+        else:
+            c.execute("SET memory_limit = '4GB'")
+        c.execute("SET temp_directory = 'duckdb_tmp'")
+        c.execute("SET preserve_insertion_order = false")
+        try:
+            c.execute("LOAD encodings")
+            log.info("DuckDB encodings 확장 로드 (cp949 직접 지원)")
+        except Exception:
+            pass
+        return c
 
+    for yyyymm in ym_list:
+        if _shutdown.is_set():
+            log.warning("종료 요청으로 남은 월 건너뜀")
+            break
+
+        con = _open_con(yyyymm)
+        try:
             for idx, (job_cfg, job_mod) in enumerate(job_mods, 1):
                 if _shutdown.is_set():
                     log.warning("종료 요청으로 남은 JOB 건너뜀")
@@ -232,8 +233,9 @@ def main():
                 except Exception as e:
                     log.error(f"[{job_name}] 실패: {e}")
                     results.append((f"{yyyymm}/{job_name}", 1))
-    finally:
-        con.close()
+        finally:
+            con.close()
+            log.info(f"DB 닫음: {yyyymm}.duckdb")
 
     # 결과 요약
     total_sec = time.time() - t_total
