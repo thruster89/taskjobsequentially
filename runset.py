@@ -32,14 +32,7 @@ import importlib.util
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# sas_to_duckdb.py에서 필요한 것들 직접 import
-from sas_to_duckdb import (
-    load_job_module, run_job, setup_logger,
-    _shutdown, _get_total_ram, LOAD_TIMEOUT, ROOT, DB_FILE,
-)
-import duckdb
-
-log = setup_logger()
+log = logging.getLogger("pipeline")
 
 
 def load_runset(path):
@@ -87,6 +80,16 @@ def wait_until(target_str):
 
 
 def main():
+    # sas_to_duckdb.py는 여기서 import (모듈 로드 시 duckdb/pandas 등 무거운 import 방지)
+    from sas_to_duckdb import (
+        load_job_module, run_job, setup_logger,
+        _shutdown, _get_total_ram, ROOT, DB_FILE,
+    )
+    import duckdb
+
+    global log
+    log = setup_logger()
+
     parser = argparse.ArgumentParser(
         description="런셋 — 여러 JOB 연속 실행",
         formatter_class=argparse.RawTextHelpFormatter,
