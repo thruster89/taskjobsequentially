@@ -24,6 +24,8 @@ Ctrl+C, FTP 등 모든 기능이 정상 동작.
   LOAD_TIMEOUT = 3600 # 테이블당 타임아웃(초) (선택)
 """
 
+print("[runset] 시작")
+
 import sys
 import time
 import logging
