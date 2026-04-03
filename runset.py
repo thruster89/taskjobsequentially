@@ -165,7 +165,7 @@ def main():
     parser.add_argument("--config", "-c", required=True,
                         help="런셋 설정 파일 경로 (예: runsets/daily.py)")
     parser.add_argument("--at", dest="at_time",
-                        help="예약 실행 시각 (HH:MM 또는 YYYY-MM-DDTHH:MM)")
+                        help="예약 실행 시각 (HH:MM / 'YYYY-MM-DD HH:MM' / +30m / +2h)")
     parser.add_argument("--timeout", type=int, default=None,
                         help="전체 타임아웃(초), 런셋 설정보다 우선")
     parser.add_argument("--ym", nargs="+", default=None,
