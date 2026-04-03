@@ -1,14 +1,16 @@
 """
 런셋(RunSet) — 여러 JOB을 연속 실행 + 전체 타임아웃 + 예약 실행
 
+sas_to_duckdb.py를 직접 import하여 같은 프로세스에서 실행.
+Ctrl+C, FTP 등 모든 기능이 정상 동작.
+
 사용법:
-  python runset.py                          # runsets/ 폴더의 기본 런셋 실행
-  python runset.py --config runsets/daily.py # 특정 런셋 실행
-  python runset.py --config runsets/daily.py --at 06:00                # 06:00에 실행
-  python runset.py --config runsets/daily.py --at "2026-04-04 06:00"  # 특정 일시에 실행
-  python runset.py --config runsets/daily.py --at +30m                # 30분 후 실행
-  python runset.py --config runsets/daily.py --at +2h                 # 2시간 후 실행
-  python runset.py --config runsets/daily.py --timeout 7200   # 전체 2시간 제한
+  python runset.py --config runsets/daily.py
+  python runset.py -c runsets/daily.py --at 06:00
+  python runset.py -c runsets/daily.py --at "2026-04-04 06:00"
+  python runset.py -c runsets/daily.py --at +30m
+  python runset.py -c runsets/daily.py --at +2h
+  python runset.py -c runsets/daily.py --timeout 7200
 
 런셋 설정 파일 예시 (runsets/daily.py):
 
@@ -23,46 +25,21 @@
 """
 
 import sys
-import os
 import time
-import signal
 import logging
 import argparse
 import importlib.util
-import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
 
-log = logging.getLogger("runset")
+# sas_to_duckdb.py에서 필요한 것들 직접 import
+from sas_to_duckdb import (
+    load_job_module, run_job, setup_logger,
+    _shutdown, _get_total_ram, LOAD_TIMEOUT, ROOT, DB_FILE,
+)
+import duckdb
 
-
-def setup_logger():
-    if log.handlers:
-        return
-    log.setLevel(logging.INFO)
-
-    class AlignedFormatter(logging.Formatter):
-        _WIDTH = len("[WARNING]")
-        def format(self, record):
-            bracket = f"[{record.levelname}]"
-            record.bracket = f"{bracket:<{self._WIDTH}}"
-            return super().format(record)
-
-    fmt = AlignedFormatter(
-        fmt="%(asctime)s %(bracket)s  %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    ch = logging.StreamHandler(sys.stdout)
-    ch.setFormatter(fmt)
-    log.addHandler(ch)
-
-    log_dir = Path(__file__).parent / "logs"
-    log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / f"runset_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-    fh = logging.FileHandler(log_file, encoding="utf-8")
-    fh.setFormatter(fmt)
-    log.addHandler(fh)
-    log.info(f"로그 파일: {log_file}")
+log = setup_logger()
 
 
 def load_runset(path):
@@ -87,7 +64,6 @@ def wait_until(target_str):
     """
     now = datetime.now()
 
-    # +숫자m / +숫자h → 상대 시간
     if target_str.startswith("+"):
         val = target_str[1:]
         if val.endswith("m"):
@@ -110,47 +86,7 @@ def wait_until(target_str):
     time.sleep(wait_sec)
 
 
-def run_job_entry(ym_list, job_cfg, load_timeout=None):
-    """단일 JOB 실행 — subprocess로 sas_to_duckdb.py 호출"""
-    job_path = job_cfg["job"]
-    cmd = [sys.executable, "sas_to_duckdb.py", "--ym"] + ym_list + ["--job", job_path]
-
-    if job_cfg.get("skip_load"):
-        cmd.append("--skip-load")
-    if job_cfg.get("stage"):
-        cmd.extend(["--stage"] + job_cfg["stage"])
-    if job_cfg.get("tables"):
-        cmd.extend(["--tables"] + job_cfg["tables"])
-
-    job_timeout = job_cfg.get("timeout")
-    lt = job_cfg.get("load_timeout") or load_timeout
-    if lt:
-        cmd.extend(["--load-timeout", str(lt)])
-
-    log.info(f"  실행: {' '.join(cmd)}")
-    t0 = time.time()
-
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=str(Path(__file__).parent),
-            timeout=job_timeout,
-        )
-        elapsed = time.time() - t0
-        if result.returncode == 0:
-            log.info(f"  완료: {job_path} ({elapsed:.1f}초)")
-        else:
-            log.error(f"  실패: {job_path} (exit={result.returncode}, {elapsed:.1f}초)")
-        return result.returncode
-    except subprocess.TimeoutExpired:
-        elapsed = time.time() - t0
-        log.error(f"  타임아웃: {job_path} ({job_timeout}초 초과, {elapsed:.1f}초)")
-        return -1
-
-
 def main():
-    setup_logger()
-
     parser = argparse.ArgumentParser(
         description="런셋 — 여러 JOB 연속 실행",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -220,29 +156,76 @@ def main():
     if args.at_time:
         wait_until(args.at_time)
 
+    # DuckDB 연결 (sas_to_duckdb.py main()과 동일한 설정)
+    db_path = ROOT / "db" / DB_FILE
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    log.info(f"DB: {db_path}")
+
+    con = duckdb.connect(str(db_path))
+    total_ram = _get_total_ram()
+    if total_ram:
+        mem_limit = max(int(total_ram * 0.75) // (1024 ** 3), 4)
+        con.execute(f"SET memory_limit = '{mem_limit}GB'")
+        log.info(f"DuckDB memory_limit = {mem_limit}GB (시스템 RAM {total_ram // (1024**3)}GB의 75%)")
+    else:
+        con.execute("SET memory_limit = '4GB'")
+    con.execute("SET temp_directory = 'duckdb_tmp'")
+    con.execute("SET preserve_insertion_order = false")
+    try:
+        con.execute("LOAD encodings")
+        log.info("DuckDB encodings 확장 로드 (cp949 직접 지원)")
+    except Exception:
+        pass
+
+    # JOB 모듈 사전 로드
+    job_mods = []
+    for job_cfg in jobs:
+        try:
+            job_mods.append((job_cfg, load_job_module(job_cfg["job"])))
+        except (FileNotFoundError, AttributeError) as e:
+            log.error(str(e))
+            con.close()
+            sys.exit(1)
+
     # 실행
     t_total = time.time()
     results = []
 
-    for idx, job_cfg in enumerate(jobs, 1):
-        # 전체 타임아웃 체크
-        if timeout and (time.time() - t_total) >= timeout:
-            log.error(f"전체 타임아웃 초과 ({timeout}초) — 남은 JOB 건너뜀")
-            break
+    try:
+        for yyyymm in ym_list:
+            if _shutdown.is_set():
+                log.warning("종료 요청으로 남은 월 건너뜀")
+                break
 
-        job_name = job_cfg["job"]
-        log.info(f"━" * 60)
-        log.info(f"[{idx}/{len(jobs)}] {job_name}")
-        log.info(f"━" * 60)
+            for idx, (job_cfg, job_mod) in enumerate(job_mods, 1):
+                if _shutdown.is_set():
+                    log.warning("종료 요청으로 남은 JOB 건너뜀")
+                    break
 
-        # 남은 시간으로 job별 타임아웃 조정
-        if timeout and not job_cfg.get("timeout"):
-            remaining = timeout - (time.time() - t_total)
-            if remaining > 0:
-                job_cfg["timeout"] = int(remaining)
+                # 전체 타임아웃 체크
+                if timeout and (time.time() - t_total) >= timeout:
+                    log.error(f"전체 타임아웃 초과 ({timeout}초) — 남은 JOB 건너뜀")
+                    break
 
-        rc = run_job_entry(ym_list, job_cfg, load_timeout=load_timeout)
-        results.append((job_name, rc))
+                job_name = job_cfg["job"]
+                log.info(f"━" * 60)
+                log.info(f"[{idx}/{len(job_mods)}] {job_name}  (월: {yyyymm})")
+                log.info(f"━" * 60)
+
+                try:
+                    run_job(
+                        con, job_mod, yyyymm,
+                        skip_load=job_cfg.get("skip_load", False),
+                        stages=job_cfg.get("stage"),
+                        only_tables=job_cfg.get("tables"),
+                        load_timeout=job_cfg.get("load_timeout") or load_timeout,
+                    )
+                    results.append((f"{yyyymm}/{job_name}", 0))
+                except Exception as e:
+                    log.error(f"[{job_name}] 실패: {e}")
+                    results.append((f"{yyyymm}/{job_name}", 1))
+    finally:
+        con.close()
 
     # 결과 요약
     total_sec = time.time() - t_total
@@ -251,8 +234,8 @@ def main():
     log.info(f"런셋 완료  총 소요: {total_sec:.1f}초 ({total_sec/60:.1f}분)")
     log.info("=" * 60)
     for name, rc in results:
-        status = "OK" if rc == 0 else f"FAIL(exit={rc})" if rc > 0 else "TIMEOUT"
-        log.info(f"  {status:12s} {name}")
+        status = "OK" if rc == 0 else "FAIL"
+        log.info(f"  {status:6s} {name}")
 
     failed = [name for name, rc in results if rc != 0]
     if failed:
