@@ -577,11 +577,9 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     except Exception as e:
         log.info(f"    샘플 컬럼 수 감지 실패({e}), 정의 {n_cols}개 사용")
 
-    # 실제 컬럼 수만큼 columns 정의 (스니퍼 불일치 방지)
     total_cols = max(actual_cols, n_cols)
-    col_map = ", ".join(f"column{i:02d}: 'VARCHAR'" for i in range(total_cols))
     if actual_cols != n_cols:
-        log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개 → {total_cols}개로 읽기")
+        log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개")
 
     # SELECT 표현식: select_cols 지정 시 해당 컬럼만, 미지정 시 전체
     use_cols = select_cols if select_cols else col_names
@@ -590,7 +588,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     for i, name in enumerate(col_names):
         if name not in use_set:
             continue
-        src = f"column{i:02d}"
+        src = f"column{i}"
         base = src
         if name in numeric_set:
             cast_type = numeric_type[name]
@@ -638,8 +636,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 delim        = '{delimiter}',
                 header       = false,
                 encoding     = '{read_enc}',
-                auto_detect  = false,
-                columns      = {{{col_map}}})
+                all_varchar  = true)
         """
         monitor = threading.Thread(target=_progress_monitor,
                                    args=(file_size, time.time()),
