@@ -1024,6 +1024,7 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
     if not run_all:
         log.info(f"[{name}] 선택 단계: {stages}")
     if only_tables:
+        only_tables = [t.replace("{yyyymm}", yyyymm) for t in only_tables]
         log.info(f"[{name}] 선택 테이블: {only_tables}")
     log.info("=" * 60)
     t0 = time.time()
