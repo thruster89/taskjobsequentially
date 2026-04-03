@@ -652,13 +652,14 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         """DuckDB 인코딩(바이트 시퀀스) 에러 여부 판별"""
         msg = str(err).lower()
         return ("unicode" in msg or "byte sequence" in msg
-                or "encoding" in msg or "invalid input" in msg)
+                or "not.*encoded" in msg)
 
     # 1차: 감지된 인코딩으로 시도
     success = _try_read_csv(path, enc)
 
     if not success:
         err = exec_error[0]
+        log.warning(f"    1차 읽기 실패 (enc={enc}): {err}")
         # 인코딩 에러면 다른 인코딩 재시도 없이 바로 decompress_gz 폴백
         # (대용량 파일에서 다른 인코딩 재시도는 시간 낭비)
         if _is_encoding_error(err):
