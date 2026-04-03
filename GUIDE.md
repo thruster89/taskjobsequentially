@@ -42,10 +42,14 @@ pip install oracledb
 프로젝트/
 ├── sas_to_duckdb.py       ← 범용 실행기 (모든 JOB 공통)
 ├── dat_loader.py          ← DAT 파일 읽기 유틸리티
+├── runset.py              ← 런셋 실행기 (여러 JOB 연속 실행 + 예약)
+├── bench_read_csv.py      ← read_csv 벤치마크 (테스트용)
 ├── jobs/
 │   ├── job1.py            ← 1차: 보험료 집계
 │   ├── job2.py            ← 2차: 배분 결과 (파일 수신 후 작성)
 │   └── job3.py            ← 3차: 마감 검증 (파일 수신 후 작성)
+├── runsets/
+│   └── daily_example.py   ← 런셋 설정 예시
 ├── data/
 │   ├── 202601/            ← --ym 202601 일 때 탐색 위치
 │   │   ├── fioBtLtrJ841_01_202601.DAT  (또는 .zip / .dat.gz)
@@ -224,8 +228,11 @@ TABLES = {                          # 테이블 정의 (필수)
         "file": "RS100_{yyyymm}.DAT",
         "desc": "유지비 배분결과",
         "month_col": "SLPDT",
-        "numeric": ["DV_RT", "DVAMT"],
+        "numeric": ["DV_RT", "DVAMT"],        # → DOUBLE
+        "bigint": ["SEQ_NO", "ID"],            # → BIGINT (선택)
         "cols": ["SLPDT", "SLPNO", "SLP_LNNO", "DVAMT"],
+        "select_cols": ["SLPDT", "DVAMT"],     # DB에 이것만 적재 (선택, 미지정 시 전체)
+        # "preconvert": True,                  # DuckDB 인코딩 에러 시 사전 변환 (선택)
     },
     # ── 유형C: SAS 데이터셋(sas7bdat) ──
     "ey_table": {
@@ -397,6 +404,16 @@ EXPORT_SHEETS = {
 | SAS 데이터셋 | `sas7bdat` | — | pyreadstat로 읽기 |
 | Oracle DB | `oracle` | `sql` 또는 `sql_file`, `dsn` | Oracle에서 SQL로 추출 |
 
+#### pipe 추가 옵션
+
+| 옵션 | 타입 | 설명 |
+|------|------|------|
+| `numeric` | `list` | DOUBLE로 캐스팅할 컬럼 |
+| `bigint` | `list` | BIGINT로 캐스팅할 컬럼 |
+| `select_cols` | `list` | DB에 적재할 컬럼만 지정 (미지정 시 전체). 불필요한 컬럼 제외하여 속도 개선 |
+| `preconvert` | `bool` | True 시 인코딩 감지 없이 바로 cp949→utf-8 변환 후 읽기. DuckDB 인코딩 에러 방지 |
+| `encoding` | `str` | 인코딩 고정 (예: `"utf-8"`). 감지 건너뜀 |
+
 #### FWF native 옵션
 
 한글이 없는 FWF 파일은 `"native": True`를 추가하면 DuckDB C++ 엔진으로 직접 처리하여 속도가 크게 향상됩니다.
@@ -499,6 +516,58 @@ def validate(con, yyyymm):
 - 두 쿼리를 `group_cols` 기준 FULL OUTER JOIN
 - `sum_col` 차이가 `threshold`(기본 1) 초과인 행을 출력
 - 차이 있으면 `output/diff_라벨.csv`에 자동 저장
+
+---
+
+## 런셋 (RunSet) — 여러 JOB 연속 실행 + 예약
+
+여러 JOB을 순서대로 실행하고, 전체 타임아웃과 예약 실행을 지원합니다.
+
+### 런셋 설정 파일
+
+`runsets/` 폴더에 Python 파일로 작성합니다.
+
+```python
+# runsets/daily.py
+YM = ["202603"]
+TIMEOUT = 14400         # 전체 4시간 제한 (0=무제한)
+LOAD_TIMEOUT = 3600     # 테이블당 1시간 제한
+
+JOBS = [
+    {"job": "jobs/job1.py"},
+    {"job": "jobs/job2.py", "stage": ["load", "logic"]},
+    {"job": "jobs/job3.py", "skip_load": True},
+]
+```
+
+### JOB별 옵션
+
+```python
+{
+    "job": "jobs/job1.py",        # JOB 파일 경로 (필수)
+    "timeout": 7200,              # 이 JOB만 2시간 제한 (선택)
+    "skip_load": True,            # LOAD 생략 (선택)
+    "stage": ["load", "logic"],   # 특정 단계만 (선택)
+    "tables": ["fio841"],         # 특정 테이블만 (선택)
+    "load_timeout": 1800,         # 테이블당 30분 (선택)
+}
+```
+
+### 실행
+
+```bash
+# 바로 실행
+python runset.py --config runsets/daily.py
+
+# 예약 실행
+python runset.py -c runsets/daily.py --at 06:00                # 오늘 06:00 (지났으면 내일)
+python runset.py -c runsets/daily.py --at "2026-04-04 06:00"   # 특정 일시
+python runset.py -c runsets/daily.py --at +30m                 # 30분 후
+python runset.py -c runsets/daily.py --at +2h                  # 2시간 후
+
+# CLI에서 오버라이드
+python runset.py -c runsets/daily.py --ym 202601 202602 --timeout 7200
+```
 
 ---
 
