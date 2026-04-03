@@ -261,7 +261,7 @@ def decompress_gz(path: Path):
         fin_raw.close()
 
     sz = out.stat().st_size / 1024 ** 2
-    log.info(f"    변환 완료: {out.name} ({sz:.0f}MB, {time.time()-t0:.1f}초)")
+    log.info(f"    변환 완료: {out.name} ({line_count:,}행, {sz:.0f}MB, {time.time()-t0:.1f}초)")
     return out
 
 
