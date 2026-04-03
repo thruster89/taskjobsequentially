@@ -626,59 +626,29 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
 
     out_table = target_table or "_pipe_parsed"
 
-    _read_csv_from = f"""read_csv('{{read_path}}',
-                delim        = '{delimiter}',
-                header       = false,
-                encoding     = '{{read_enc}}',
-                all_varchar  = true)"""
-
     def _try_read_csv(read_path, read_enc):
-        """read_csv 실행 + 단계별 시간 측정. 성공 시 True, 실패 시 False."""
+        """read_csv 실행 + 진행률 모니터. 성공 시 True, 실패 시 False."""
         nonlocal _done_ev
         exec_error[0] = None
-        csv_src = _read_csv_from.format(read_path=read_path, read_enc=read_enc)
-
-        # 1단계: 순수 파싱 (COUNT만)
-        t_parse = time.time()
         _done_ev = threading.Event()
-        q_count = f"SELECT COUNT(*) FROM {csv_src}"
-        monitor = threading.Thread(target=_progress_monitor,
-                                   args=(file_size, time.time()),
-                                   daemon=True)
-        monitor.start()
-        worker = threading.Thread(target=_run_query, args=(q_count,))
-        worker.start()
-        worker.join()
-        _done_ev.set()
-        if exec_error[0] is not None:
-            return False
-        parse_sec = time.time() - t_parse
-        log.info(f"    ⏱ 1단계 파싱(COUNT): {parse_sec:.1f}초")
-
-        # 2단계: SELECT + CAST + 테이블 저장
-        t_mat = time.time()
-        exec_error[0] = None
-        _done_ev = threading.Event()
-        q_create = f"""
+        q = f"""
             CREATE OR REPLACE TABLE {out_table} AS
             SELECT {select_clause}
-            FROM {csv_src}
+            FROM read_csv('{read_path}',
+                delim        = '{delimiter}',
+                header       = false,
+                encoding     = '{read_enc}',
+                all_varchar  = true)
         """
         monitor = threading.Thread(target=_progress_monitor,
                                    args=(file_size, time.time()),
                                    daemon=True)
         monitor.start()
-        worker = threading.Thread(target=_run_query, args=(q_create,))
+        worker = threading.Thread(target=_run_query, args=(q,))
         worker.start()
         worker.join()
         _done_ev.set()
-        if exec_error[0] is not None:
-            return False
-        mat_sec = time.time() - t_mat
-        log.info(f"    ⏱ 2단계 SELECT+CAST+저장: {mat_sec:.1f}초")
-        log.info(f"    ⏱ 합계: 파싱 {parse_sec:.1f}초 + 저장 {mat_sec:.1f}초 = {parse_sec+mat_sec:.1f}초")
-
-        return True
+        return exec_error[0] is None
 
     def _is_encoding_error(err):
         """DuckDB 인코딩(바이트 시퀀스) 에러 여부 판별"""
