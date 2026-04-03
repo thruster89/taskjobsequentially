@@ -4,8 +4,10 @@
 사용법:
   python runset.py                          # runsets/ 폴더의 기본 런셋 실행
   python runset.py --config runsets/daily.py # 특정 런셋 실행
-  python runset.py --config runsets/daily.py --at 06:00       # 06:00에 실행
-  python runset.py --config runsets/daily.py --at 2026-04-04T06:00  # 특정 일시에 실행
+  python runset.py --config runsets/daily.py --at 06:00                # 06:00에 실행
+  python runset.py --config runsets/daily.py --at "2026-04-04 06:00"  # 특정 일시에 실행
+  python runset.py --config runsets/daily.py --at +30m                # 30분 후 실행
+  python runset.py --config runsets/daily.py --at +2h                 # 2시간 후 실행
   python runset.py --config runsets/daily.py --timeout 7200   # 전체 2시간 제한
 
 런셋 설정 파일 예시 (runsets/daily.py):
@@ -75,10 +77,27 @@ def load_runset(path):
 
 
 def wait_until(target_str):
-    """지정 시각까지 대기. 형식: HH:MM 또는 YYYY-MM-DDTHH:MM"""
+    """
+    지정 시각까지 대기.
+    형식:
+      06:00           → 오늘 06:00 (지났으면 내일)
+      2026-04-04 06:00 → 특정 일시
+      +30m            → 30분 후
+      +2h             → 2시간 후
+    """
     now = datetime.now()
-    if "T" in target_str:
-        target = datetime.strptime(target_str, "%Y-%m-%dT%H:%M")
+
+    # +숫자m / +숫자h → 상대 시간
+    if target_str.startswith("+"):
+        val = target_str[1:]
+        if val.endswith("m"):
+            target = now + timedelta(minutes=int(val[:-1]))
+        elif val.endswith("h"):
+            target = now + timedelta(hours=int(val[:-1]))
+        else:
+            target = now + timedelta(minutes=int(val))
+    elif " " in target_str:
+        target = datetime.strptime(target_str, "%Y-%m-%d %H:%M")
     else:
         target = datetime.strptime(target_str, "%H:%M").replace(
             year=now.year, month=now.month, day=now.day
