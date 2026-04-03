@@ -479,6 +479,7 @@ def read_pipe_dat(
 
 
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
+                     bigint: list = None,
                      delimiter: str = "|", encodings: list = None,
                      fast: bool = None, target_table: str = None,
                      preconvert: bool = False, select_cols: list = None):
@@ -502,16 +503,13 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
 
     Returns: 건수 (int)
     """
-    # numeric: 리스트 → 전부 DOUBLE, 딕셔너리 → 컬럼별 타입 지정
-    numeric_set = set()
+    # numeric → DOUBLE, bigint → BIGINT
     numeric_type = {}
-    if numeric:
-        if isinstance(numeric, dict):
-            numeric_set = set(numeric.keys())
-            numeric_type = numeric
-        else:
-            numeric_set = set(numeric)
-            numeric_type = {c: "DOUBLE" for c in numeric}
+    for c in (numeric or []):
+        numeric_type[c] = "DOUBLE"
+    for c in (bigint or []):
+        numeric_type[c] = "BIGINT"
+    numeric_set = set(numeric_type.keys())
     enc_list = encodings or DUCKDB_ENCODINGS
 
     # ── fast 모드 / gz 여부 판별 ──
