@@ -158,7 +158,8 @@ def main():
 예시:
   python runset.py --config runsets/daily.py
   python runset.py --config runsets/daily.py --at 06:00
-  python runset.py --config runsets/daily.py --at 2026-04-04T06:00
+  python runset.py --config runsets/daily.py --at "2026-04-04 06:00"
+  python runset.py --config runsets/daily.py --at +30m
   python runset.py --config runsets/daily.py --timeout 7200
         """
     )
@@ -190,6 +191,30 @@ def main():
     log.info(f"JOB 수: {len(jobs)}개")
     if timeout:
         log.info(f"전체 타임아웃: {timeout}초 ({timeout//3600}시간 {(timeout%3600)//60}분)")
+    if load_timeout:
+        log.info(f"테이블당 타임아웃: {load_timeout}초")
+
+    # 실행 계획 출력
+    log.info("")
+    log.info("─" * 60)
+    log.info("실행 계획:")
+    log.info("─" * 60)
+    for idx, job_cfg in enumerate(jobs, 1):
+        job_name = job_cfg["job"]
+        opts = []
+        if job_cfg.get("stage"):
+            opts.append(f"stage={job_cfg['stage']}")
+        if job_cfg.get("tables"):
+            resolved = [t.replace("{yyyymm}", ym_list[0]) for t in job_cfg["tables"]]
+            opts.append(f"tables={resolved}")
+        if job_cfg.get("skip_load"):
+            opts.append("skip_load")
+        if job_cfg.get("timeout"):
+            opts.append(f"timeout={job_cfg['timeout']}초")
+        opt_str = f"  ({', '.join(opts)})" if opts else ""
+        log.info(f"  [{idx}] {job_name}{opt_str}")
+    log.info("─" * 60)
+    log.info("")
 
     # 예약 실행
     if args.at_time:
