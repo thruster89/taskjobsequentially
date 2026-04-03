@@ -655,7 +655,8 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                 if exists and month_col:
                     cnt = read_pipe_duckdb(con, path, cfg["cols"],
                                            cfg.get("numeric"),
-                                           cfg.get("delimiter", "|"),
+                                           bigint=cfg.get("bigint"),
+                                           delimiter=cfg.get("delimiter", "|"),
                                            encodings=encs,
                                            fast=cfg.get("fast"),
                                            preconvert=cfg.get("preconvert", False),
@@ -666,7 +667,8 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                         con.execute(f"DROP TABLE {name}")
                     cnt = read_pipe_duckdb(con, path, cfg["cols"],
                                            cfg.get("numeric"),
-                                           cfg.get("delimiter", "|"),
+                                           bigint=cfg.get("bigint"),
+                                           delimiter=cfg.get("delimiter", "|"),
                                            encodings=encs,
                                            fast=cfg.get("fast"),
                                            target_table=name,

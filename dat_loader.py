@@ -479,6 +479,7 @@ def read_pipe_dat(
 
 
 def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
+                     bigint: list = None,
                      delimiter: str = "|", encodings: list = None,
                      fast: bool = None, target_table: str = None,
                      preconvert: bool = False, select_cols: list = None):
@@ -502,7 +503,13 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
 
     Returns: 건수 (int)
     """
-    numeric_set = set(numeric or [])
+    # numeric → DOUBLE, bigint → BIGINT
+    numeric_type = {}
+    for c in (numeric or []):
+        numeric_type[c] = "DOUBLE"
+    for c in (bigint or []):
+        numeric_type[c] = "BIGINT"
+    numeric_set = set(numeric_type.keys())
     enc_list = encodings or DUCKDB_ENCODINGS
 
     # ── fast 모드 / gz 여부 판별 ──
@@ -586,7 +593,8 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         src = f"column{i:02d}"
         base = src
         if name in numeric_set:
-            base = f"TRY_CAST({base} AS DOUBLE)"
+            cast_type = numeric_type[name]
+            base = f"TRY_CAST({base} AS {cast_type})"
         exprs.append(f"{base} AS {name}")
     select_clause = ", ".join(exprs)
     # 읽을 파일 크기 (gz면 원본 크기를 알 수 없으므로 압축 크기 사용)
@@ -630,7 +638,8 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 delim        = '{delimiter}',
                 header       = false,
                 encoding     = '{read_enc}',
-                null_padding = true,
+                null_padding = false,
+                ignore_errors = true,
                 auto_detect  = false,
                 columns      = {{{col_map}}})
         """
