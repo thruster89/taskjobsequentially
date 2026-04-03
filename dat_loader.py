@@ -584,11 +584,13 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     # SELECT 표현식: select_cols 지정 시 해당 컬럼만, 미지정 시 전체
     use_cols = select_cols if select_cols else col_names
     use_set = set(use_cols)
+    # DuckDB auto_detect 컬럼명: 자릿수에 맞춰 제로패딩 (10개 미만→column0, 100개 이상→column000)
+    pad = len(str(total_cols - 1)) if total_cols > 0 else 1
     exprs = []
     for i, name in enumerate(col_names):
         if name not in use_set:
             continue
-        src = f"column{i}"
+        src = f"column{str(i).zfill(pad)}"
         base = src
         if name in numeric_set:
             cast_type = numeric_type[name]
