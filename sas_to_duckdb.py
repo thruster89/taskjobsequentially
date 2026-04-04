@@ -189,8 +189,14 @@ def _update_registry(con, table_name, file_name, row_count):
     """, [table_name, file_name, row_count])
 
 
+# 현재 실행 중인 SQL 파라미터 (run_job에서 설정)
+_sql_params = {}
+
+
 def sql(con, label, query, params=None):
-    """SQL 실행 + CREATE TABLE이면 건수 로깅"""
+    """SQL 실행 + CREATE TABLE이면 건수 로깅.
+    ${SDM}, ${LM} 등 파라미터 자동 치환."""
+    query = _replace_params(query, _sql_params)
     t = time.time()
     con.execute(query, params or [])
     m = re.search(r"CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
@@ -201,9 +207,12 @@ def sql(con, label, query, params=None):
         log.info(f"  {_pad(label, 50)}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
 
 
-def sql_file(con, label, path, **params):
-    """SQL 파일 읽어서 실행. {yyyymm} 등 파라미터 치환."""
-    query = Path(path).read_text(encoding="utf-8").format(**params)
+def sql_file(con, label, path, **extra_params):
+    """SQL 파일 읽어서 실행. ${SDM} 등 파라미터 자동 치환 + 추가 파라미터."""
+    query = Path(path).read_text(encoding="utf-8")
+    # ${KEY} 치환 (기본 params + 추가 params)
+    all_params = {**_sql_params, **extra_params}
+    query = _replace_params(query, all_params)
     return sql(con, label, query)
 
 
@@ -218,6 +227,32 @@ def prev_ym(yyyymm, n=1):
         y += 1
         m -= 12
     return f"{y}{m:02d}"
+
+
+def _replace_params(text, params):
+    """${KEY} 형식 파라미터 치환 (DBeaver 호환)"""
+    for k, v in params.items():
+        text = text.replace(f"${{{k}}}", str(v))
+    return text
+
+
+def build_params(yyyymm):
+    """yyyymm 기반 기본 파라미터 생성
+
+    ${SDM}  : 당월 (202603)
+    ${LM}   : 전월 (202602)
+    ${LM2}  : 2개월 전 (202601)
+    ${YYYY} : 년도 (2026)
+    ${MM}   : 월 (03)
+    """
+    return {
+        "SDM":  yyyymm,
+        "LM":   prev_ym(yyyymm, 1),
+        "LM2":  prev_ym(yyyymm, 2),
+        "YYYY": yyyymm[:4],
+        "MM":   yyyymm[4:],
+        "yyyymm": yyyymm,
+    }
 
 
 def table_exists(con, name):
@@ -931,15 +966,18 @@ def _build_export_query(tbl, cfg, yyyymm=None):
     """
     if isinstance(cfg, str):
         sheet = cfg.replace("{yyyymm}", yyyymm) if yyyymm else cfg
+        sheet = _replace_params(sheet, _sql_params)
         return f"SELECT * FROM {tbl}", sheet
 
     sheet = cfg.get("sheet", tbl)
     if yyyymm:
         sheet = sheet.replace("{yyyymm}", yyyymm)
+    sheet = _replace_params(sheet, _sql_params)
 
     # sql이 있으면 그대로 사용 (columns/where 무시)
     if "sql" in cfg:
         query = cfg["sql"].replace("{yyyymm}", yyyymm) if yyyymm else cfg["sql"]
+        query = _replace_params(query, _sql_params)
         return query, sheet
 
     cols = ", ".join(cfg["columns"]) if "columns" in cfg else "*"
@@ -953,6 +991,7 @@ def _build_export_query(tbl, cfg, yyyymm=None):
 
     if yyyymm:
         query = query.replace("{yyyymm}", yyyymm)
+    query = _replace_params(query, _sql_params)
     return query, sheet
 
 
@@ -1104,6 +1143,16 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
     desc = getattr(job_mod, "DESC", "")
     # stages가 지정되면 해당 단계만 실행, 아니면 전체 실행
     run_all = stages is None
+
+    # ${SDM}, ${LM} 등 SQL 파라미터 생성
+    _sql_params.update(build_params(yyyymm))
+    # JOB 파일에 PARAMS dict가 있으면 추가 (커스텀 파라미터)
+    job_params = getattr(job_mod, "PARAMS", None)
+    if job_params:
+        if callable(job_params):
+            _sql_params.update(job_params(yyyymm))
+        else:
+            _sql_params.update(job_params)
 
     log.info("=" * 60)
     log.info(f"[{name}] {desc}  (월: {yyyymm})")
