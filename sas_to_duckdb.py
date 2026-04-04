@@ -153,8 +153,50 @@ def _pad(s, width):
     return s + ' ' * max(0, width - _dw(s))
 
 
+# ── 로드 레지스트리 ──
+
+def _ensure_registry(con):
+    """_load_registry 테이블이 없으면 생성"""
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS _load_registry (
+            table_name  VARCHAR,
+            file_name   VARCHAR,
+            row_count   BIGINT,
+            loaded_at   TIMESTAMP DEFAULT current_timestamp,
+            PRIMARY KEY (table_name)
+        )
+    """)
+
+
+def _check_registry(con, table_name, file_name):
+    """이미 같은 파일로 로드된 적 있으면 (row_count, loaded_at) 반환, 없으면 None"""
+    try:
+        row = con.execute("""
+            SELECT row_count, loaded_at FROM _load_registry
+            WHERE table_name = ? AND file_name = ?
+        """, [table_name, file_name]).fetchone()
+        return row
+    except Exception:
+        return None
+
+
+def _update_registry(con, table_name, file_name, row_count):
+    """로드 완료 후 레지스트리 갱신"""
+    _ensure_registry(con)
+    con.execute("""
+        INSERT OR REPLACE INTO _load_registry (table_name, file_name, row_count, loaded_at)
+        VALUES (?, ?, ?, current_timestamp)
+    """, [table_name, file_name, row_count])
+
+
+# 현재 실행 중인 SQL 파라미터 (run_job에서 설정)
+_sql_params = {}
+
+
 def sql(con, label, query, params=None):
-    """SQL 실행 + CREATE TABLE이면 건수 로깅"""
+    """SQL 실행 + CREATE TABLE이면 건수 로깅.
+    ${SDM}, ${LM} 등 파라미터 자동 치환."""
+    query = _replace_params(query, _sql_params)
     t = time.time()
     con.execute(query, params or [])
     m = re.search(r"CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
@@ -165,9 +207,12 @@ def sql(con, label, query, params=None):
         log.info(f"  {_pad(label, 50)}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
 
 
-def sql_file(con, label, path, **params):
-    """SQL 파일 읽어서 실행. {yyyymm} 등 파라미터 치환."""
-    query = Path(path).read_text(encoding="utf-8").format(**params)
+def sql_file(con, label, path, **extra_params):
+    """SQL 파일 읽어서 실행. ${SDM} 등 파라미터 자동 치환 + 추가 파라미터."""
+    query = Path(path).read_text(encoding="utf-8")
+    # ${KEY} 치환 (기본 params + 추가 params)
+    all_params = {**_sql_params, **extra_params}
+    query = _replace_params(query, all_params)
     return sql(con, label, query)
 
 
@@ -182,6 +227,32 @@ def prev_ym(yyyymm, n=1):
         y += 1
         m -= 12
     return f"{y}{m:02d}"
+
+
+def _replace_params(text, params):
+    """${KEY} 형식 파라미터 치환 (DBeaver 호환)"""
+    for k, v in params.items():
+        text = text.replace(f"${{{k}}}", str(v))
+    return text
+
+
+def build_params(yyyymm):
+    """yyyymm 기반 기본 파라미터 생성
+
+    ${SDM}  : 당월 (202603)
+    ${LM}   : 전월 (202602)
+    ${LM2}  : 2개월 전 (202601)
+    ${YYYY} : 년도 (2026)
+    ${MM}   : 월 (03)
+    """
+    return {
+        "SDM":  yyyymm,
+        "LM":   prev_ym(yyyymm, 1),
+        "LM2":  prev_ym(yyyymm, 2),
+        "YYYY": yyyymm[:4],
+        "MM":   yyyymm[4:],
+        "yyyymm": yyyymm,
+    }
 
 
 def table_exists(con, name):
@@ -586,10 +657,11 @@ def _read_one(name, cfg, base_path, yyyymm):
     return name, cfg, df
 
 
-def do_load(con, yyyymm, tables: dict, timeout: int = None):
+def do_load(con, yyyymm, tables: dict, timeout: int = None, force: bool = False):
     """TABLES dict 기반 로드 (FWF → DuckDB 네이티브, 나머지 → 병렬 읽기+순차 적재)
 
     timeout: 테이블당 최대 읽기 시간(초). None이면 LOAD_TIMEOUT 사용, 0이면 무제한.
+    force  : True면 레지스트리 무시하고 강제 재로드.
     """
     base_path = ROOT / "data" / yyyymm
     loaded, failed = [], []
@@ -597,6 +669,9 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
 
     # 테이블 키의 {yyyymm} 플레이스홀더를 실제 월로 치환
     tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
+
+    # 로드 레지스트리 초기화
+    _ensure_registry(con)
 
     # DuckDB 네이티브 대상 (pipe, csv) / 나머지 (fwf, sas7bdat, oracle 등) 분리
     # fwf 는 SAS colspec 이 바이트 위치이므로 SUBSTR(글자 기반) 대신
@@ -621,6 +696,16 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
         t = cfg.get("timeout", tmo)  # 테이블별 timeout 우선
         try:
             path = _resolve_path(base_path, cfg["file"], yyyymm)
+
+            # 레지스트리 체크: 같은 파일로 이미 로드됐으면 스킵
+            if not force:
+                prev = _check_registry(con, name, path.name)
+                if prev:
+                    cnt, loaded_at = prev
+                    log.info(f"  [Skip] {_pad(name, 20)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
+                    loaded.append(name)
+                    continue
+
             log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
 
             # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
@@ -697,6 +782,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                     con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
                 con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
             log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+            _update_registry(con, name, path.name, cnt)
             loaded.append(name)
         except Exception as e:
             if timer:
@@ -787,6 +873,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
                         raise RuntimeError(f"pandas 인코딩 실패 (시도: {pd_encs})")
 
                 log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
+                _update_registry(con, name, path.name, cnt)
                 loaded.append(name)
             except TimeoutError:
                 log.error(f"  [Read] {_pad(name, 20)} 폴백 타임아웃 ({t}초 초과) — 건너뜀")
@@ -797,42 +884,71 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None):
 
     # ── 나머지 (sas7bdat, oracle 등): 병렬 읽기 + 순차 적재 ──
     if other_tables:
-        results = []
-        workers = min(MAX_READ_WORKERS, len(other_tables))
-        log.info(f"  병렬 Read 시작 (workers={workers}, 테이블={len(other_tables)}개)")
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = {
-                name: pool.submit(_read_one, name, cfg, base_path, yyyymm)
-                for name, cfg in other_tables.items()
-            }
-            for name, fut in futures.items():
-                t = other_tables[name].get("timeout", tmo)  # 테이블별 timeout 우선
+        # 레지스트리 체크: 이미 로드된 테이블 스킵
+        if not force:
+            skip_tables = []
+            for name, cfg in other_tables.items():
+                if cfg.get("type") == "oracle":
+                    continue  # Oracle은 파일이 아니므로 레지스트리 체크 불가
                 try:
-                    result_timeout = t if t > 0 else None
-                    results.append(fut.result(timeout=result_timeout))
-                except TimeoutError:
-                    log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
-                    failed.append(name)
-                except FileNotFoundError:
-                    log.warning(f"  [Read] {_pad(name, 20)} 파일 없음 — 건너뜀")
-                    failed.append(name)
-                except Exception as e:
-                    log.error(f"  [Read] {_pad(name, 20)} 실패: {e}")
-                    failed.append(name)
+                    path = _resolve_path(base_path, cfg["file"], yyyymm)
+                    prev = _check_registry(con, name, path.name)
+                    if prev:
+                        cnt, loaded_at = prev
+                        log.info(f"  [Skip] {_pad(name, 20)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
+                        loaded.append(name)
+                        skip_tables.append(name)
+                except Exception:
+                    pass
+            other_tables = {k: v for k, v in other_tables.items() if k not in skip_tables}
 
-        log.info(f"  ── Load 시작 ({len(results)}개 테이블) ──")
-        for name, cfg, df in results:
-            if _shutdown.is_set():
-                log.warning("종료 요청으로 남은 Load 건너뜀")
-                break
-            try:
-                ts = time.time()
-                cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                log.info(f"  [Load] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
-                loaded.append(name)
-            except Exception as e:
-                log.error(f"  [Load] {_pad(name, 20)} 실패: {e}")
-                failed.append(name)
+        if not other_tables:
+            pass  # 모두 스킵됨
+        else:
+            results = []
+            workers = min(MAX_READ_WORKERS, len(other_tables))
+            log.info(f"  병렬 Read 시작 (workers={workers}, 테이블={len(other_tables)}개)")
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    name: pool.submit(_read_one, name, cfg, base_path, yyyymm)
+                    for name, cfg in other_tables.items()
+                }
+                for name, fut in futures.items():
+                    t = other_tables[name].get("timeout", tmo)
+                    try:
+                        result_timeout = t if t > 0 else None
+                        results.append(fut.result(timeout=result_timeout))
+                    except TimeoutError:
+                        log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
+                        failed.append(name)
+                    except FileNotFoundError:
+                        log.warning(f"  [Read] {_pad(name, 20)} 파일 없음 — 건너뜀")
+                        failed.append(name)
+                    except Exception as e:
+                        log.error(f"  [Read] {_pad(name, 20)} 실패: {e}")
+                        failed.append(name)
+
+            log.info(f"  ── Load 시작 ({len(results)}개 테이블) ──")
+            for name, cfg, df in results:
+                if _shutdown.is_set():
+                    log.warning("종료 요청으로 남은 Load 건너뜀")
+                    break
+                try:
+                    ts = time.time()
+                    cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
+                    log.info(f"  [Load] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+                    # 파일명 추출 (Oracle은 제외)
+                    file_name = cfg.get("file", "oracle")
+                    if "{yyyymm}" in file_name:
+                        try:
+                            file_name = _resolve_path(base_path, file_name, yyyymm).name
+                        except Exception:
+                            pass
+                    _update_registry(con, name, file_name, cnt)
+                    loaded.append(name)
+                except Exception as e:
+                    log.error(f"  [Load] {_pad(name, 20)} 실패: {e}")
+                    failed.append(name)
 
     return loaded, failed
 
@@ -850,15 +966,18 @@ def _build_export_query(tbl, cfg, yyyymm=None):
     """
     if isinstance(cfg, str):
         sheet = cfg.replace("{yyyymm}", yyyymm) if yyyymm else cfg
+        sheet = _replace_params(sheet, _sql_params)
         return f"SELECT * FROM {tbl}", sheet
 
     sheet = cfg.get("sheet", tbl)
     if yyyymm:
         sheet = sheet.replace("{yyyymm}", yyyymm)
+    sheet = _replace_params(sheet, _sql_params)
 
     # sql이 있으면 그대로 사용 (columns/where 무시)
     if "sql" in cfg:
         query = cfg["sql"].replace("{yyyymm}", yyyymm) if yyyymm else cfg["sql"]
+        query = _replace_params(query, _sql_params)
         return query, sheet
 
     cols = ", ".join(cfg["columns"]) if "columns" in cfg else "*"
@@ -872,6 +991,7 @@ def _build_export_query(tbl, cfg, yyyymm=None):
 
     if yyyymm:
         query = query.replace("{yyyymm}", yyyymm)
+    query = _replace_params(query, _sql_params)
     return query, sheet
 
 
@@ -1017,12 +1137,22 @@ def _write_summary_sheet(writer, yyyymm, summary):
 
 
 def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
-            only_tables=None, load_timeout=None):
+            only_tables=None, load_timeout=None, force_load=False):
     """단일 JOB 실행: load → logic → validate → export"""
     name = job_mod.NAME
     desc = getattr(job_mod, "DESC", "")
     # stages가 지정되면 해당 단계만 실행, 아니면 전체 실행
     run_all = stages is None
+
+    # ${SDM}, ${LM} 등 SQL 파라미터 생성
+    _sql_params.update(build_params(yyyymm))
+    # JOB 파일에 PARAMS dict가 있으면 추가 (커스텀 파라미터)
+    job_params = getattr(job_mod, "PARAMS", None)
+    if job_params:
+        if callable(job_params):
+            _sql_params.update(job_params(yyyymm))
+        else:
+            _sql_params.update(job_params)
 
     log.info("=" * 60)
     log.info(f"[{name}] {desc}  (월: {yyyymm})")
@@ -1053,6 +1183,8 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
         if not tables:
             log.info(f"[{name}] TABLES 없음 — LOAD 스킵")
         else:
+            # TABLES 키의 {yyyymm} 치환 (only_tables 비교 전에 수행)
+            tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
             if only_tables:
                 unknown = set(only_tables) - set(tables)
                 if unknown:
@@ -1063,7 +1195,7 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
             if tables:
                 tmo_label = f", 타임아웃={load_timeout}초" if load_timeout else ""
                 log.info(f"[{name}] LOAD ({len(tables)}개 테이블{tmo_label})")
-                loaded, failed = do_load(con, yyyymm, tables, timeout=load_timeout)
+                loaded, failed = do_load(con, yyyymm, tables, timeout=load_timeout, force=force_load)
                 if failed:
                     log.warning(f"[{name}] 로드 실패: {failed}")
 
@@ -1136,6 +1268,8 @@ def main():
                         help="로드할 테이블명만 지정 (예: --tables fio841 fio842)")
     parser.add_argument("--load-timeout", type=int, default=None,
                         help=f"테이블당 최대 읽기 시간(초) (기본: {LOAD_TIMEOUT}, 0=무제한)")
+    parser.add_argument("--force-load", "-f", action="store_true",
+                        help="이미 로드된 테이블도 강제 재로드 (레지스트리 무시)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="DEBUG 로그 콘솔 출력")
 
@@ -1224,7 +1358,8 @@ def main():
                     try:
                         run_job(con, mod, yyyymm, skip_load=args.skip_load,
                                 stages=args.stage, only_tables=args.tables,
-                                load_timeout=args.load_timeout)
+                                load_timeout=args.load_timeout,
+                                force_load=args.force_load)
                     except Exception as e:
                         name = getattr(mod, "NAME", str(mod))
                         log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")

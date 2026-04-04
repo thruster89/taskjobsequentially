@@ -228,6 +228,7 @@ def main():
                         stages=job_cfg.get("stage"),
                         only_tables=job_cfg.get("tables"),
                         load_timeout=job_cfg.get("load_timeout") or load_timeout,
+                        force_load=job_cfg.get("force_load", False),
                     )
                     results.append((f"{yyyymm}/{job_name}", 0))
                 except Exception as e:

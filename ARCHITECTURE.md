@@ -47,15 +47,17 @@ JOB 파일의 `logic()`과 `validate()`에서 사용합니다.
 #### `sql(con, label, query, params=None)`
 
 SQL 실행 후, CREATE TABLE 문이면 생성된 테이블의 건수를 자동 로깅합니다.
+`${SDM}`, `${LM}` 등 SQL 파라미터가 자동 치환됩니다 (DBeaver 호환).
 
 ```
 로그:   결과 테이블                                          45,230건  (0.3초)
 ```
 
 내부 동작:
-1. `con.execute(query, params)` 실행
-2. 정규식으로 `CREATE [OR REPLACE] TABLE [IF NOT EXISTS] 테이블명` 패턴 매칭
-3. 매칭되면 `SELECT COUNT(*)` 실행하여 건수 로깅
+1. `_replace_params()`로 `${KEY}` 치환
+2. `con.execute(query, params)` 실행
+3. 정규식으로 `CREATE [OR REPLACE] TABLE [IF NOT EXISTS] 테이블명` 패턴 매칭
+4. 매칭되면 `SELECT COUNT(*)` 실행하여 건수 로깅
 
 #### `table_exists(con, name)`
 
@@ -164,6 +166,11 @@ FWF 테이블에 `"native": True`를 명시하면 DuckDB SUBSTR 경로로 직접
 - Native: `threading.Timer` → `con.interrupt()`로 쿼리 취소
 - Other: `fut.result(timeout=N)`
 
+#### 월별 DB 분리
+
+`--ym`에 따라 `db/YYYYMM.duckdb`로 월별 DB 파일이 분리됩니다.
+DB 연결은 월 루프 안에서 생성/해제됩니다.
+
 #### 월별 누적 적재 (_upsert)
 
 ```
@@ -172,12 +179,29 @@ month_col 있음? → DELETE WHERE month_col LIKE 'YYYYMM%' → INSERT
 month_col 없음? → DELETE 전체 → INSERT (전체 교체)
 ```
 
+#### 로드 레지스트리 (_load_registry)
+
+로드 완료 시 `_load_registry` 테이블에 (테이블명, 파일명, 행수, 시각) 기록.
+재실행 시 같은 파일명이면 `[Skip]` 처리. `--force-load`로 강제 재로드 가능.
+
+---
+
+### SQL 파라미터 치환 (${KEY})
+
+`run_job()` 진입 시 `build_params(yyyymm)`으로 기본 파라미터를 `_sql_params`에 설정.
+JOB 파일에 `PARAMS` dict/함수가 있으면 추가 병합.
+`sql()`, `sql_file()`, `_build_export_query()`에서 `_replace_params()`로 `${KEY}` 치환.
+
+```
+${SDM} → 당월, ${LM} → 전월, ${LM2} → 2개월전, ${YYYY} → 년도, ${MM} → 월
+```
+
 ---
 
 ### _build_export_query() — Export SQL 생성
 
 `EXPORT_SHEETS`의 값(str 또는 dict)을 SQL 문으로 변환합니다.
-테이블 키, 시트명, SQL/where 등 모든 문자열에서 `{yyyymm}` 플레이스홀더가 자동 치환됩니다.
+테이블 키, 시트명, SQL/where 등 모든 문자열에서 `{yyyymm}` 및 `${KEY}` 파라미터가 자동 치환됩니다.
 
 ```
 "시트명"                           → SELECT * FROM tbl
