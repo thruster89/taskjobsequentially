@@ -119,12 +119,13 @@ python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -v
 
 | 옵션 | 단축 | 설명 | 기본값 |
 |------|------|------|--------|
-| `--ym YYYYMM [...]` | | 처리할 년월 (복수 가능) | `202601` |
+| `--ym YYYYMM [...]` | | 처리할 년월 (복수 가능). 월별 DB 파일 분리 (`db/YYYYMM.duckdb`) | `202601` |
 | `--job FILE [...]` | `-j` | JOB 파일 경로 (필수) | |
 | `--skip-load` | | LOAD 단계 생략 | OFF |
+| `--force-load` | `-f` | 이미 로드된 테이블도 강제 재로드 (레지스트리 무시) | OFF |
 | `--verbose` | `-v` | DEBUG 로그 콘솔 출력 | OFF |
 | `--stage STAGE [...]` | `-s` | 특정 단계만 실행 (prejob/load/logic/validate/export) | 전체 |
-| `--tables TBL [...]` | `-t` | 로드할 테이블만 지정 | 전체 |
+| `--tables TBL [...]` | `-t` | 로드할 테이블만 지정 (`{yyyymm}` 치환 지원) | 전체 |
 | `--load-timeout SEC` | | 테이블당 최대 읽기 시간(초), 0=무제한 | 300 |
 
 ### 단계별 실행 예시
@@ -176,9 +177,83 @@ def prejob(yyyymm):
 
 ---
 
+## 월별 DB 분리
+
+`--ym`에 따라 월별로 별도 DB 파일이 생성됩니다.
+
+```bash
+python sas_to_duckdb.py --ym 202603 --job jobs/job1.py   # → db/202603.duckdb
+python sas_to_duckdb.py --ym 202601 --job jobs/job1.py   # → db/202601.duckdb
+```
+
+## 로드 레지스트리 (중복 로드 방지)
+
+파일을 로드하면 `_load_registry` 테이블에 기록됩니다. 재실행 시 같은 파일이면 자동 스킵합니다.
+
+```
+[Skip] dambo202603          이미 로드됨 (btLtrJ930_020_xxx.utf8.dat, 93,429,362건, 2026-04-03 14:14:31)
+```
+
+- 파일명이 바뀌면 (새 파일 수신) 자동으로 다시 로드
+- 강제 재로드: `--force-load` 또는 `-f`
+- 레지스트리 확인: `SELECT * FROM _load_registry`
+
+---
+
+## SQL 파라미터 (DBeaver 호환)
+
+`sql()`, `sql_file()`, `EXPORT_SHEETS`에서 `${KEY}` 형식 파라미터가 자동 치환됩니다.
+DBeaver에서 같은 SQL을 그대로 실행할 수 있습니다.
+
+### 기본 파라미터 (자동 생성)
+
+| 파라미터 | `--ym 202603` 일 때 | 설명 |
+|---|---|---|
+| `${SDM}` | 202603 | 당월 |
+| `${LM}` | 202602 | 전월 |
+| `${LM2}` | 202601 | 2개월 전 |
+| `${YYYY}` | 2026 | 년도 |
+| `${MM}` | 03 | 월 |
+| `${yyyymm}` | 202603 | 기존 호환 |
+
+### 사용 예시
+
+```sql
+-- sql/query.sql (DBeaver에서도 그대로 실행 가능)
+SELECT * FROM tbl
+WHERE ym = '${SDM}'
+  AND prev_ym = '${LM}'
+```
+
+```python
+# JOB 파일에서
+def logic(con, yyyymm):
+    # 인라인 SQL
+    sql(con, "결과", """
+        CREATE OR REPLACE TABLE result AS
+        SELECT * FROM tbl WHERE ym = '${SDM}' AND prev_ym = '${LM}'
+    """)
+
+    # SQL 파일
+    sql_file(con, "결과", "sql/query.sql")
+```
+
+### 커스텀 파라미터 (JOB 파일에서 추가)
+
+```python
+# 방법 1: 고정값
+PARAMS = {"DEPT": "A01", "RATE": "0.05"}
+
+# 방법 2: yyyymm 기반 동적 생성
+def PARAMS(yyyymm):
+    return {"FY_START": yyyymm[:4] + "01"}
+```
+
+---
+
 ## 월별 누적
 
-하나의 DB(`ifrs4-expense.duckdb`)에 월별 데이터가 쌓입니다.
+월별 DB에 데이터가 쌓입니다.
 
 ```bash
 # 1월 적재
