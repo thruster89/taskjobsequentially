@@ -102,7 +102,7 @@ except ImportError:
 ROOT = Path(__file__).parent
 MAX_READ_WORKERS = 4
 LOAD_TIMEOUT = 300          # 테이블당 최대 읽기 시간 (초), 0이면 무제한
-DB_FILE = "ifrs4-expense.duckdb"   # 출력 DuckDB 파일명
+DB_FILE = "${SDM}.duckdb"          # 기본 DB 파일명 (${SDM} 등 치환됨)
 ENCODINGS = ["cp949", "utf-8"]
 FILE_EXTENSIONS = [".zip", ".dat.gz", ".DAT", ".dat", ".prn", ".csv", ".csv.gz", ".sas7bdat"]
 
@@ -1155,8 +1155,12 @@ def _write_summary_sheet(writer, yyyymm, summary):
 
 
 def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
-            only_tables=None, load_timeout=None, force_load=False):
-    """단일 JOB 실행: load → logic → validate → export"""
+            only_tables=None, load_timeout=None, force_load=False,
+            attach_dbs=None):
+    """단일 JOB 실행: load → logic → validate → export
+
+    attach_dbs : {"LM": "path/to/202602.duckdb", ...} — 외부 DB attach (READ_ONLY)
+    """
     name = job_mod.NAME
     desc = getattr(job_mod, "DESC", "")
     # stages가 지정되면 해당 단계만 실행, 아니면 전체 실행
@@ -1182,18 +1186,21 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
     log.info("=" * 60)
     t0 = time.time()
 
-    # ── 전월 DB attach (있으면) ──
-    # SQL에서 LM.테이블명 으로 전월 데이터 조인 가능
-    lm = prev_ym(yyyymm)
-    lm_db = ROOT / "db" / f"{lm}.duckdb"
-    lm_attached = False
-    if lm_db.exists():
-        try:
-            con.execute(f"ATTACH '{lm_db}' AS LM (READ_ONLY)")
-            log.info(f"[{name}] 전월 DB attach: LM ← {lm}.duckdb")
-            lm_attached = True
-        except Exception as e:
-            log.debug(f"[{name}] 전월 DB attach 실패 (무시): {e}")
+    # ── 외부 DB attach ──
+    attached = []
+    if attach_dbs:
+        for alias, db_file in attach_dbs.items():
+            db_file = _replace_params(str(db_file), _sql_params)
+            db_path = Path(db_file) if Path(db_file).is_absolute() else ROOT / "db" / db_file
+            if not db_path.exists():
+                log.info(f"[{name}] attach 스킵: {alias} ← {db_path.name} (파일 없음)")
+                continue
+            try:
+                con.execute(f"ATTACH '{db_path}' AS {alias} (READ_ONLY)")
+                log.info(f"[{name}] attach: {alias} ← {db_path.name}")
+                attached.append(alias)
+            except Exception as e:
+                log.debug(f"[{name}] attach 실패 ({alias}): {e}")
 
     try:
 
@@ -1263,11 +1270,10 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
                 log.error(f"[{name}] EXPORT 실패: {e}")
 
     finally:
-        # ── 전월 DB detach ──
-        if lm_attached:
+        # ── 외부 DB detach ──
+        for alias in attached:
             try:
-                con.execute("DETACH LM")
-                log.debug(f"[{name}] 전월 DB detach: LM")
+                con.execute(f"DETACH {alias}")
             except Exception:
                 pass
 
@@ -1312,6 +1318,10 @@ def main():
                         help=f"테이블당 최대 읽기 시간(초) (기본: {LOAD_TIMEOUT}, 0=무제한)")
     parser.add_argument("--force-load", "-f", action="store_true",
                         help="이미 로드된 테이블도 강제 재로드 (레지스트리 무시)")
+    parser.add_argument("--db", default=None,
+                        help="DB 파일명 (기본: {yyyymm}.duckdb). ${SDM} 등 치환 가능")
+    parser.add_argument("--attach", nargs="*", default=None,
+                        help="외부 DB attach (형식: ALIAS=파일명, 예: LM=${LM}.duckdb)")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="DEBUG 로그 콘솔 출력")
 
@@ -1363,8 +1373,10 @@ def main():
                 log.warning("종료 요청으로 남은 월 건너뜀")
                 break
 
-            # 월별 DB 파일: db/YYYYMM.duckdb
-            db_path = ROOT / "db" / f"{yyyymm}.duckdb"
+            # DB 파일 결정 (CLI --db 또는 기본 {yyyymm}.duckdb)
+            params = build_params(yyyymm)
+            db_name = _replace_params(args.db or DB_FILE, params)
+            db_path = ROOT / "db" / db_name
             db_path.parent.mkdir(parents=True, exist_ok=True)
             log.info(f"대상 월: {yyyymm}")
             log.info(f"DB    : {db_path}")
@@ -1398,10 +1410,18 @@ def main():
                         log.warning("종료 요청으로 남은 JOB 건너뜀")
                         break
                     try:
+                        # --attach ALIAS=파일명 파싱
+                        attach_dbs = {}
+                        if args.attach:
+                            for item in args.attach:
+                                if "=" in item:
+                                    k, v = item.split("=", 1)
+                                    attach_dbs[k] = v
                         run_job(con, mod, yyyymm, skip_load=args.skip_load,
                                 stages=args.stage, only_tables=args.tables,
                                 load_timeout=args.load_timeout,
-                                force_load=args.force_load)
+                                force_load=args.force_load,
+                                attach_dbs=attach_dbs or None)
                     except Exception as e:
                         name = getattr(mod, "NAME", str(mod))
                         log.error(f"[{name}] 실패 — 다음 JOB으로 계속 진행: {e}")
