@@ -1067,6 +1067,9 @@ def do_export(con, yyyymm, job_name, sheet_map):
                     ts = time.time()
                     sql, sheet = _build_export_query(tbl, single_cfg, yyyymm)
                     df = con.execute(sql).df()
+                    if len(df) == 0:
+                        log.info(f"    {_pad(sheet[:31], 25)}  0건 — 출력 제외")
+                        continue
                     sname = sheet[:31]
                     df.to_excel(writer, sheet_name=sname, index=False)
                     # 정수/실수 컬럼에 #,##0 서식 적용 (E+ 방지)
