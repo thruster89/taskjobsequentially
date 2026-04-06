@@ -232,14 +232,23 @@ ${SDM} → 당월, ${LM} → 전월, ${LM2} → 2개월전, ${YYYY} → 년도, 
 
 ```python
 run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
-        only_tables=None, load_timeout=None)
+        only_tables=None, load_timeout=None, force_load=False,
+        attach_dbs=None)
 ```
 
 - `stages=None` → 전체 실행 (load → logic → validate → export)
 - `stages=["logic", "validate"]` → 해당 단계만 실행
 - `skip_load=True` → load 생략 (stages=None일 때만 동작)
 - `only_tables=["fio841"]` → load 시 해당 테이블만 적재
+- `force_load=True` → 로드 레지스트리 무시, 강제 재로드
+- `attach_dbs={"LM": "202602.duckdb"}` → 외부 DB attach (READ_ONLY)
 - 각 단계(logic/validate/export)는 실패해도 다음 단계로 계속 진행
+
+**실행 시 흐름:**
+1. `_sql_params` 설정 (`build_params` + JOB `PARAMS`)
+2. `attach_dbs`가 있으면 외부 DB ATTACH (READ_ONLY)
+3. PREJOB → LOAD → LOGIC → VALIDATE → EXPORT
+4. finally: DETACH
 
 ---
 
