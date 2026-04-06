@@ -196,7 +196,10 @@ _sql_params = {}
 def sql(con, label, query, params=None):
     """SQL 실행 + CREATE TABLE이면 건수 로깅.
     ${SDM}, ${LM} 등 파라미터 자동 치환."""
-    query = _replace_params(query, _sql_params)
+    if _sql_params:
+        query = _replace_params(query, _sql_params)
+    elif "${" in query:
+        log.warning(f"  SQL에 ${{}} 파라미터가 있지만 _sql_params가 비어있음 — run_job() 경유 확인 필요")
     t = time.time()
     con.execute(query, params or [])
     m = re.search(r"CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
