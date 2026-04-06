@@ -1182,70 +1182,94 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
     log.info("=" * 60)
     t0 = time.time()
 
-    # 0. PREJOB
-    if run_all or "prejob" in stages:
-        if hasattr(job_mod, "prejob"):
-            try:
-                log.info(f"[{name}] PREJOB")
-                ts = time.time()
-                job_mod.prejob(yyyymm)
-                log.info(f"[{name}] PREJOB 완료 ({time.time()-ts:.1f}초)")
-            except Exception as e:
-                log.error(f"[{name}] PREJOB 실패 — 다음 단계로 계속 진행: {e}")
-
-    # 1. LOAD
-    if run_all and skip_load:
-        log.info(f"[{name}] LOAD 스킵")
-    elif run_all or "load" in stages:
-        tables = getattr(job_mod, "TABLES", None)
-        if not tables:
-            log.info(f"[{name}] TABLES 없음 — LOAD 스킵")
-        else:
-            # TABLES 키의 {yyyymm} 치환 (only_tables 비교 전에 수행)
-            tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
-            if only_tables:
-                unknown = set(only_tables) - set(tables)
-                if unknown:
-                    log.warning(f"[{name}] 존재하지 않는 테이블 무시: {unknown}")
-                tables = {k: v for k, v in tables.items() if k in only_tables}
-                if not tables:
-                    log.warning(f"[{name}] 로드할 테이블이 없습니다")
-            if tables:
-                tmo_label = f", 타임아웃={load_timeout}초" if load_timeout else ""
-                log.info(f"[{name}] LOAD ({len(tables)}개 테이블{tmo_label})")
-                loaded, failed = do_load(con, yyyymm, tables, timeout=load_timeout, force=force_load)
-                if failed:
-                    log.warning(f"[{name}] 로드 실패: {failed}")
-
-    # 2. LOGIC
-    if run_all or "logic" in stages:
-        if hasattr(job_mod, "logic"):
-            try:
-                log.info(f"[{name}] LOGIC")
-                job_mod.logic(con, yyyymm)
-            except Exception as e:
-                log.error(f"[{name}] LOGIC 실패 — 다음 단계로 계속 진행: {e}")
-
-    # 3. VALIDATE
-    if run_all or "validate" in stages:
-        if hasattr(job_mod, "validate"):
-            try:
-                log.info("─" * 60)
-                log.info(f"[{name}] VALIDATE")
-                job_mod.validate(con, yyyymm)
-                log.info("─" * 60)
-            except Exception as e:
-                log.error(f"[{name}] VALIDATE 실패 — 다음 단계로 계속 진행: {e}")
-
-    # 4. EXPORT
-    if run_all or "export" in stages:
+    # ── 전월 DB attach (있으면) ──
+    # SQL에서 LM.테이블명 으로 전월 데이터 조인 가능
+    lm = prev_ym(yyyymm)
+    lm_db = ROOT / "db" / f"{lm}.duckdb"
+    lm_attached = False
+    if lm_db.exists():
         try:
-            sheets = dict(getattr(job_mod, "EXPORT_SHEETS", {}))
-            if sheets:
-                log.info(f"[{name}] EXPORT")
-                do_export(con, yyyymm, name, sheets)
+            con.execute(f"ATTACH '{lm_db}' AS LM (READ_ONLY)")
+            log.info(f"[{name}] 전월 DB attach: LM ← {lm}.duckdb")
+            lm_attached = True
         except Exception as e:
-            log.error(f"[{name}] EXPORT 실패: {e}")
+            log.debug(f"[{name}] 전월 DB attach 실패 (무시): {e}")
+
+    try:
+
+        # 0. PREJOB
+        if run_all or "prejob" in stages:
+            if hasattr(job_mod, "prejob"):
+                try:
+                    log.info(f"[{name}] PREJOB")
+                    ts = time.time()
+                    job_mod.prejob(yyyymm)
+                    log.info(f"[{name}] PREJOB 완료 ({time.time()-ts:.1f}초)")
+                except Exception as e:
+                    log.error(f"[{name}] PREJOB 실패 — 다음 단계로 계속 진행: {e}")
+
+        # 1. LOAD
+        if run_all and skip_load:
+            log.info(f"[{name}] LOAD 스킵")
+        elif run_all or "load" in stages:
+            tables = getattr(job_mod, "TABLES", None)
+            if not tables:
+                log.info(f"[{name}] TABLES 없음 — LOAD 스킵")
+            else:
+                # TABLES 키의 {yyyymm} 치환 (only_tables 비교 전에 수행)
+                tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
+                if only_tables:
+                    unknown = set(only_tables) - set(tables)
+                    if unknown:
+                        log.warning(f"[{name}] 존재하지 않는 테이블 무시: {unknown}")
+                    tables = {k: v for k, v in tables.items() if k in only_tables}
+                    if not tables:
+                        log.warning(f"[{name}] 로드할 테이블이 없습니다")
+                if tables:
+                    tmo_label = f", 타임아웃={load_timeout}초" if load_timeout else ""
+                    log.info(f"[{name}] LOAD ({len(tables)}개 테이블{tmo_label})")
+                    loaded, failed = do_load(con, yyyymm, tables, timeout=load_timeout, force=force_load)
+                    if failed:
+                        log.warning(f"[{name}] 로드 실패: {failed}")
+
+        # 2. LOGIC
+        if run_all or "logic" in stages:
+            if hasattr(job_mod, "logic"):
+                try:
+                    log.info(f"[{name}] LOGIC")
+                    job_mod.logic(con, yyyymm)
+                except Exception as e:
+                    log.error(f"[{name}] LOGIC 실패 — 다음 단계로 계속 진행: {e}")
+
+        # 3. VALIDATE
+        if run_all or "validate" in stages:
+            if hasattr(job_mod, "validate"):
+                try:
+                    log.info("─" * 60)
+                    log.info(f"[{name}] VALIDATE")
+                    job_mod.validate(con, yyyymm)
+                    log.info("─" * 60)
+                except Exception as e:
+                    log.error(f"[{name}] VALIDATE 실패 — 다음 단계로 계속 진행: {e}")
+
+        # 4. EXPORT
+        if run_all or "export" in stages:
+            try:
+                sheets = dict(getattr(job_mod, "EXPORT_SHEETS", {}))
+                if sheets:
+                    log.info(f"[{name}] EXPORT")
+                    do_export(con, yyyymm, name, sheets)
+            except Exception as e:
+                log.error(f"[{name}] EXPORT 실패: {e}")
+
+    finally:
+        # ── 전월 DB detach ──
+        if lm_attached:
+            try:
+                con.execute("DETACH LM")
+                log.debug(f"[{name}] 전월 DB detach: LM")
+            except Exception:
+                pass
 
     log.info(f"[{name}] 완료  소요: {time.time()-t0:.1f}초")
 
