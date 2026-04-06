@@ -283,6 +283,7 @@ def check(con, label, query, expect="zero"):
       "nonzero" — 1건 이상이어야 정상 (데이터 존재 확인)
       int       — 정확히 N건이어야 정상
     """
+    query = _replace_params(query, _sql_params)
     try:
         row = con.execute(query).fetchone()
     except Exception as e:
@@ -311,6 +312,7 @@ def check_sum(con, label, query):
       check_sum(con, "보험료 합계",
                 "SELECT SUM(RP_PRM) AS RP_PRM, SUM(AF_PRM) AS AF_PRM FROM fio841")
     """
+    query = _replace_params(query, _sql_params)
     try:
         row = con.execute(query).fetchone()
     except Exception as e:
@@ -346,6 +348,8 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
     coalesce_keys = ", ".join(
         f"COALESCE(a.{c}, b.{c}) AS {c}" for c in group_cols)
 
+    query_a = _replace_params(query_a, _sql_params)
+    query_b = _replace_params(query_b, _sql_params)
     diff_sql = f"""
         WITH a AS ({query_a}),
              b AS ({query_b})
@@ -402,6 +406,9 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
 
 def row_count(con, table, group_by=None, where=None):
     """테이블 건수 로깅. group_by 지정 시 그룹별, where 지정 시 조건부 건수 출력."""
+    table = _replace_params(table, _sql_params)
+    if where:
+        where = _replace_params(where, _sql_params)
     if not table_exists(con, table):
         log.warning(f"  [--] {_pad(table, 45)}  테이블 없음")
         return 0
