@@ -1384,4 +1384,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # __main__과 import된 sas_to_duckdb 모듈을 동일 인스턴스로 통일
+    # → _sql_params 등 모듈 레벨 변수가 JOB 파일에서도 동일하게 참조됨
+    sys.modules["sas_to_duckdb"] = sys.modules["__main__"]
     main()
