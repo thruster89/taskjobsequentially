@@ -45,25 +45,28 @@ pip install oracledb
 ├── runset.py              ← 런셋 실행기 (여러 JOB 연속 실행 + 예약)
 ├── bench_read_csv.py      ← read_csv 벤치마크 (테스트용)
 ├── jobs/
-│   ├── job1.py            ← 1차: 보험료 집계
-│   ├── job2.py            ← 2차: 배분 결과 (파일 수신 후 작성)
-│   └── job3.py            ← 3차: 마감 검증 (파일 수신 후 작성)
+│   ├── rsv/               ← 가결산 JOB (하위 폴더 자유)
+│   │   ├── 0_FTP.py
+│   │   ├── 1_LOAD.py
+│   │   └── 3_VERIFY.py
+│   ├── job1.py
+│   ├── job2.py
+│   └── job3.py
 ├── runsets/
 │   └── daily_example.py   ← 런셋 설정 예시
+├── sql/                   ← 외부 SQL 파일 (sql_file()에서 사용)
 ├── data/
-│   ├── 202601/            ← --ym 202601 일 때 탐색 위치
-│   │   ├── fioBtLtrJ841_01_202601.DAT  (또는 .zip / .dat.gz)
-│   │   ├── RS100_202601.DAT
-│   │   └── ...
-│   └── 202602/
+│   └── 202603/            ← --ym 202603 일 때 탐색 위치
 ├── db/
-│   └── ifrs4-expense.duckdb    ← 월별 데이터 누적
+│   ├── 202603.duckdb      ← 월별 DB (--db로 변경 가능)
+│   └── 202602.duckdb
 ├── output/
-│   ├── job1_202601.xlsx
-│   ├── job2_202601.xlsx
-│   └── job3_202601.xlsx
+│   └── job1_202603_v0.01.xlsx
 └── logs/
 ```
+
+JOB 파일은 `jobs/` 아래 어디에 두든 됩니다 (하위 폴더 OK).
+`from sas_to_duckdb import sql, ...` 가 자동으로 동작합니다.
 
 파일 확장자는 자동 탐색: `.zip` → `.dat.gz` → `.DAT` → `.dat` → `.prn` → `.csv` → `.csv.gz` → `.sas7bdat`
 
@@ -119,14 +122,43 @@ python sas_to_duckdb.py --ym 202601 --job jobs/job1.py -v
 
 | 옵션 | 단축 | 설명 | 기본값 |
 |------|------|------|--------|
-| `--ym YYYYMM [...]` | | 처리할 년월 (복수 가능). 월별 DB 파일 분리 (`db/YYYYMM.duckdb`) | `202601` |
+| `--ym YYYYMM [...]` | | 처리할 년월 (복수 가능) | `202601` |
 | `--job FILE [...]` | `-j` | JOB 파일 경로 (필수) | |
+| `--db NAME` | | DB 파일명 (`${SDM}` 등 치환 가능) | `${SDM}.duckdb` |
+| `--attach ALIAS=FILE [...]` | | 외부 DB attach (`${LM}` 등 치환 가능) | 없음 |
 | `--skip-load` | | LOAD 단계 생략 | OFF |
 | `--force-load` | `-f` | 이미 로드된 테이블도 강제 재로드 (레지스트리 무시) | OFF |
 | `--verbose` | `-v` | DEBUG 로그 콘솔 출력 | OFF |
 | `--stage STAGE [...]` | `-s` | 특정 단계만 실행 (prejob/load/logic/validate/export) | 전체 |
-| `--tables TBL [...]` | `-t` | 로드할 테이블만 지정 (`{yyyymm}` 치환 지원) | 전체 |
+| `--tables TBL [...]` | `-t` | 로드할 테이블만 지정 (`{yyyymm}` / `${SDM}` 치환 지원) | 전체 |
 | `--load-timeout SEC` | | 테이블당 최대 읽기 시간(초), 0=무제한 | 300 |
+
+### DB 파일 설정
+
+```bash
+# 기본: 월별 분리
+python sas_to_duckdb.py --ym 202603 --job jobs/job1.py
+# → db/202603.duckdb
+
+# 단일 DB 사용
+python sas_to_duckdb.py --ym 202603 --job jobs/job1.py --db ifrs4.duckdb
+# → db/ifrs4.duckdb
+
+# 전월 DB attach (SQL에서 LM.테이블명 으로 접근)
+python sas_to_duckdb.py --ym 202603 --job jobs/job1.py --attach LM=${LM}.duckdb
+# → db/202602.duckdb AS LM (READ_ONLY)
+
+# 전월 + 2개월 전 attach
+python sas_to_duckdb.py --ym 202603 --job jobs/job1.py --attach LM=${LM}.duckdb LM2=${LM2}.duckdb
+```
+
+attach된 DB의 테이블은 SQL에서 `LM.테이블명`으로 접근합니다:
+
+```sql
+SELECT a.*, b.AMT AS 전월AMT
+FROM dambo${SDM} a
+LEFT JOIN LM.dambo${LM} b ON a.CVRCD = b.CVRCD
+```
 
 ### 단계별 실행 예시
 
@@ -177,14 +209,35 @@ def prejob(yyyymm):
 
 ---
 
-## 월별 DB 분리
+## DB 파일 관리
 
-`--ym`에 따라 월별로 별도 DB 파일이 생성됩니다.
+기본적으로 `--ym`에 따라 월별 DB 파일(`db/${SDM}.duckdb`)이 생성됩니다.
+`--db` 옵션이나 런셋의 `DB_NAME`으로 변경 가능합니다.
 
 ```bash
-python sas_to_duckdb.py --ym 202603 --job jobs/job1.py   # → db/202603.duckdb
-python sas_to_duckdb.py --ym 202601 --job jobs/job1.py   # → db/202601.duckdb
+python sas_to_duckdb.py --ym 202603 --job jobs/job1.py         # → db/202603.duckdb
+python sas_to_duckdb.py --ym 202603 --job jobs/job1.py --db mydb.duckdb  # → db/mydb.duckdb
 ```
+
+### 전월 DB 연결 (ATTACH)
+
+전월 데이터와 조인이 필요하면 `--attach` 또는 런셋의 `ATTACH`로 연결합니다.
+연결된 DB는 READ_ONLY이며, JOB 종료 시 자동 DETACH됩니다.
+
+```bash
+python sas_to_duckdb.py --ym 202603 --job jobs/job1.py --attach LM=${LM}.duckdb
+```
+
+SQL에서 사용:
+```sql
+-- 당월 테이블: dambo202603 (현재 DB)
+-- 전월 테이블: LM.dambo202602 (attach된 DB)
+SELECT a.CVRCD, a.AMT AS 당월, b.AMT AS 전월
+FROM dambo${SDM} a
+LEFT JOIN LM.dambo${LM} b ON a.CVRCD = b.CVRCD
+```
+
+전월 DB 파일이 없으면 attach를 건너뛰고 정상 진행합니다.
 
 ## 로드 레지스트리 (중복 로드 방지)
 
@@ -228,15 +281,37 @@ WHERE ym = '${SDM}'
 ```python
 # JOB 파일에서
 def logic(con, yyyymm):
-    # 인라인 SQL
+    # 인라인 SQL — ${SDM}, ${LM} 자동 치환
     sql(con, "결과", """
-        CREATE OR REPLACE TABLE result AS
+        CREATE OR REPLACE TABLE result_${SDM} AS
         SELECT * FROM tbl WHERE ym = '${SDM}' AND prev_ym = '${LM}'
     """)
 
-    # SQL 파일
+    # SQL 파일 — 파일 안의 ${SDM}도 자동 치환
     sql_file(con, "결과", "sql/query.sql")
+
+    # 전월 DB 테이블 조인 (ATTACH 설정 시)
+    sql(con, "전월비교", """
+        CREATE OR REPLACE TABLE compare_${SDM} AS
+        SELECT a.*, b.AMT AS 전월AMT
+        FROM dambo${SDM} a
+        LEFT JOIN LM.dambo${LM} b ON a.CVRCD = b.CVRCD
+    """)
+
+def validate(con, yyyymm):
+    # ${SDM} 모든 유틸 함수에서 치환 가능
+    row_count(con, "result_${SDM}")
+    row_count(con, "dambo${SDM}", where="CLS_YYMM = '${SDM}'")
+    check(con, "이상 체크", "SELECT COUNT(*) FROM result_${SDM} WHERE amt < 0")
+    check_sum(con, "합계", "SELECT SUM(amt) AS AMT FROM result_${SDM}")
+    check_diff(con, "당월vs전월",
+        "SELECT cd, SUM(amt) AS AMT FROM agg_${SDM} GROUP BY cd",
+        "SELECT cd, SUM(amt) AS AMT FROM agg_${LM} GROUP BY cd",
+        group_cols=["cd"], sum_col="AMT")
 ```
+
+> **참고:** `sql()`, `sql_file()`, `check()`, `check_sum()`, `check_diff()`, `row_count()` 모두에서 `${KEY}` 자동 치환됩니다.
+> `con.execute()`를 직접 호출하면 치환되지 않으므로, 가능하면 위 함수들을 사용하세요.
 
 ### 커스텀 파라미터 (JOB 파일에서 추가)
 
@@ -453,6 +528,17 @@ EXPORT_SHEETS = {
         "sheet": "월별_{yyyymm}",
         "where": "YYYYMM = '{yyyymm}'",
     },
+
+    # ⑧ ${SDM}, ${LM} 파라미터 (DBeaver 호환)
+    "count_ex${SDM}": "상태별정리",
+    "compare": {
+        "sheet": "당월전월비교",
+        "sql": """
+            SELECT a.CVRCD, a.AMT AS 당월, b.AMT AS 전월
+            FROM dambo${SDM} a
+            LEFT JOIN LM.dambo${LM} b ON a.CVRCD = b.CVRCD
+        """,
+    },
 }
 ```
 
@@ -468,7 +554,8 @@ EXPORT_SHEETS = {
 > `sql`을 지정하면 `columns`, `where`, `order_by`, `limit`는 무시됩니다.
 > `sql` 키를 사용할 때 dict key는 실제 테이블명이 아니어도 됩니다 (JOIN, UNION 등에 활용).
 > `out_` 접두사 테이블은 여전히 자동 추가됩니다.
-> 테이블 키, 시트명, SQL/where 등 모든 문자열에서 `{yyyymm}` 플레이스홀더가 자동 치환됩니다 (f-string 불필요).
+> 테이블 키, 시트명, SQL/where 등 모든 문자열에서 `{yyyymm}` 및 `${SDM}` 등 파라미터가 자동 치환됩니다.
+> 쿼리 결과가 **0건이면 시트 출력에서 자동 제외**됩니다.
 
 ### TABLES 타입별 설정
 
@@ -526,16 +613,18 @@ EXPORT_SHEETS = {
 from sas_to_duckdb import sql, sql_file, table_exists, require_tables, check, check_sum, check_diff, row_count
 ```
 
-| 함수 | 용도 | 사용 단계 |
-|------|------|-----------|
-| `sql(con, label, query)` | SQL 실행 + CREATE TABLE이면 건수 로깅 | logic |
-| `sql_file(con, label, path, **params)` | SQL 파일 읽어서 실행 (`{yyyymm}` 등 치환) | logic |
-| `table_exists(con, name)` | 테이블 존재 여부 확인 | logic / validate |
-| `require_tables(con, *names)` | 여러 테이블 존재 확인 + 없으면 경고 로그 | validate |
-| `row_count(con, table, group_by, where)` | 테이블 건수 로깅 (조건부/그룹별) | validate |
-| `check(con, label, query, expect)` | 건수 검증 (0건/N건/1건 이상) | validate |
-| `check_sum(con, label, query)` | 합계값 표시 (여러 컬럼 지원) | validate |
-| `check_diff(con, label, qA, qB, group_cols, sum_col)` | 두 쿼리 결과 차이 비교 | validate |
+| 함수 | 용도 | `${SDM}` 치환 |
+|------|------|:---:|
+| `sql(con, label, query)` | SQL 실행 + CREATE TABLE이면 건수 로깅 | O |
+| `sql_file(con, label, path, **params)` | SQL 파일 읽어서 실행 | O |
+| `table_exists(con, name)` | 테이블 존재 여부 확인 | X |
+| `require_tables(con, *names)` | 여러 테이블 존재 확인 + 없으면 경고 로그 | X |
+| `row_count(con, table, group_by, where)` | 테이블 건수 로깅 (조건부/그룹별) | O |
+| `check(con, label, query, expect)` | 건수 검증 (0건/N건/1건 이상) | O |
+| `check_sum(con, label, query)` | 합계값 표시 (여러 컬럼 지원) | O |
+| `check_diff(con, label, qA, qB, group_cols, sum_col)` | 두 쿼리 결과 차이 비교 | O |
+| `prev_ym(yyyymm, n)` | n개월 전 YYYYMM 반환 | — |
+| `build_params(yyyymm)` | SDM/LM/YYYY/MM 파라미터 dict 생성 | — |
 
 #### 사용 예시
 
@@ -603,28 +692,53 @@ def validate(con, yyyymm):
 `runsets/` 폴더에 Python 파일로 작성합니다.
 
 ```python
-# runsets/daily.py
+# runsets/prelim.py — 가결산 런셋
 YM = ["202603"]
+
+# DB 파일명 (${SDM} 등 치환 가능)
+DB_NAME = "${SDM}.duckdb"               # → db/202603.duckdb
+# DB_NAME = "ifrs4-expense.duckdb"      # 단일 DB 사용 시
+
+# 외부 DB attach (SQL에서 LM.테이블명 으로 접근)
+ATTACH = {
+    "LM": "${LM}.duckdb",              # → db/202602.duckdb AS LM
+    # "LM2": "${LM2}.duckdb",
+}
+# ATTACH = {}                           # attach 안 함
+
 TIMEOUT = 14400         # 전체 4시간 제한 (0=무제한)
 LOAD_TIMEOUT = 3600     # 테이블당 1시간 제한
 
 JOBS = [
-    {"job": "jobs/job1.py"},
-    {"job": "jobs/job2.py", "stage": ["load", "logic"]},
-    {"job": "jobs/job3.py", "skip_load": True},
+    {"job": "jobs/rsv/0_FTP.py"},
+    {"job": "jobs/rsv/1_LOAD.py", "tables": ["dambo{yyyymm}"]},
+    {"job": "jobs/rsv/3_VERIFY.py"},
 ]
 ```
+
+### 런셋 전역 설정
+
+| 설정 | 타입 | 설명 | 기본값 |
+|------|------|------|--------|
+| `YM` | `list` | 처리할 년월 (필수) | |
+| `JOBS` | `list` | JOB 목록 (필수) | |
+| `DB_NAME` | `str` | DB 파일명 (`${SDM}` 등 치환) | `${SDM}.duckdb` |
+| `ATTACH` | `dict` | 외부 DB attach (`{ALIAS: 파일명}`) | `{}` |
+| `TIMEOUT` | `int` | 전체 타임아웃(초), 0=무제한 | `0` |
+| `LOAD_TIMEOUT` | `int` | 테이블당 타임아웃(초) | 없음 |
 
 ### JOB별 옵션
 
 ```python
 {
-    "job": "jobs/job1.py",        # JOB 파일 경로 (필수)
-    "timeout": 7200,              # 이 JOB만 2시간 제한 (선택)
-    "skip_load": True,            # LOAD 생략 (선택)
-    "stage": ["load", "logic"],   # 특정 단계만 (선택)
-    "tables": ["fio841"],         # 특정 테이블만 (선택)
-    "load_timeout": 1800,         # 테이블당 30분 (선택)
+    "job": "jobs/rsv/1_LOAD.py",         # JOB 파일 경로 (필수)
+    "timeout": 7200,                     # 이 JOB만 2시간 제한 (선택)
+    "skip_load": True,                   # LOAD 생략 (선택)
+    "stage": ["load", "logic"],          # 특정 단계만 (선택)
+    "tables": ["dambo{yyyymm}"],         # 특정 테이블만, {yyyymm} 치환 (선택)
+    "load_timeout": 1800,                # 이 JOB만 테이블당 30분 (선택)
+    "force_load": True,                  # 레지스트리 무시 강제 재로드 (선택)
+    "attach": {"LM": "custom.duckdb"},   # 이 JOB만 별도 attach (선택, 전역 오버라이드)
 }
 ```
 
