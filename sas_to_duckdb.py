@@ -1045,8 +1045,9 @@ def do_export(con, yyyymm, job_name, sheet_map):
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = _next_output_path(out_dir, job_name, yyyymm)
 
-    # 테이블 키의 {yyyymm} 플레이스홀더를 실제 월로 치환
-    sheet_map = {k.replace("{yyyymm}", yyyymm): v for k, v in sheet_map.items()}
+    # 테이블 키의 {yyyymm} / ${SDM} 등 플레이스홀더 치환
+    sheet_map = {_replace_params(k.replace("{yyyymm}", yyyymm), _sql_params): v
+                 for k, v in sheet_map.items()}
 
     # out_ 접두사 테이블 자동 추가
     db_tables = [r[0] for r in con.execute(
@@ -1067,6 +1068,9 @@ def do_export(con, yyyymm, job_name, sheet_map):
                     ts = time.time()
                     sql, sheet = _build_export_query(tbl, single_cfg, yyyymm)
                     df = con.execute(sql).df()
+                    if len(df) == 0:
+                        log.info(f"    {_pad(sheet[:31], 25)}  0건 — 출력 제외")
+                        continue
                     sname = sheet[:31]
                     df.to_excel(writer, sheet_name=sname, index=False)
                     # 정수/실수 컬럼에 #,##0 서식 적용 (E+ 방지)
@@ -1384,4 +1388,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # __main__과 import된 sas_to_duckdb 모듈을 동일 인스턴스로 통일
+    # → _sql_params 등 모듈 레벨 변수가 JOB 파일에서도 동일하게 참조됨
+    sys.modules["sas_to_duckdb"] = sys.modules["__main__"]
     main()
