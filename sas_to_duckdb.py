@@ -657,8 +657,276 @@ def _read_one(name, cfg, base_path, yyyymm):
     return name, cfg, df
 
 
+def _is_native(cfg):
+    """DuckDB 네이티브 읽기 대상 여부 (pipe, csv, fwf+native)"""
+    if cfg.get("type") == "fwf" and cfg.get("native"):
+        return True
+    return cfg.get("type") in {"pipe", "csv"}
+
+
+def _upsert_from_tmp(con, name, tmp_table, yyyymm, month_col):
+    """임시 테이블 → 실제 테이블로 upsert 후 임시 테이블 삭제"""
+    if not table_exists(con, name):
+        con.execute(f"CREATE TABLE {name} AS SELECT * FROM {tmp_table}")
+    else:
+        if month_col:
+            con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
+        else:
+            con.execute(f"DELETE FROM {name}")
+        con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
+    con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
+
+
+def _read_native(con, path, name, cfg, yyyymm):
+    """단일 native 테이블 DuckDB 읽기. (cnt, tmp_table) 반환."""
+    ttype = cfg["type"]
+    enc_override = cfg.get("encoding")
+    encs = [enc_override] if enc_override else None
+
+    if ttype == "fwf":
+        cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"), encodings=encs)
+        return cnt, "_fwf_parsed"
+
+    if ttype == "csv":
+        cnt = read_csv_duckdb(con, path, cfg.get("cols"), cfg.get("numeric"),
+                              cfg.get("delimiter", ","), cfg.get("header", False),
+                              encodings=encs, fast=cfg.get("fast"))
+        return cnt, "_csv_parsed"
+
+    # pipe
+    month_col = cfg.get("month_col")
+    exists = table_exists(con, name)
+    pipe_kwargs = dict(
+        bigint=cfg.get("bigint"),
+        delimiter=cfg.get("delimiter", "|"),
+        encodings=encs,
+        fast=cfg.get("fast"),
+        preconvert=cfg.get("preconvert", False),
+        select_cols=cfg.get("select_cols"),
+    )
+    if exists and month_col:
+        cnt = read_pipe_duckdb(con, path, cfg["cols"], cfg.get("numeric"), **pipe_kwargs)
+        return cnt, "_pipe_parsed"
+    else:
+        if exists:
+            con.execute(f"DROP TABLE {name}")
+        cnt = read_pipe_duckdb(con, path, cfg["cols"], cfg.get("numeric"),
+                               target_table=name, **pipe_kwargs)
+        return cnt, None
+
+
+def _fallback_pandas(con, path, name, cfg, yyyymm):
+    """DuckDB 실패 시 pandas 청크 폴백. cnt 반환."""
+    from dat_loader import open_file_binary, _cast_numeric, _strip_str
+
+    enc_override = cfg.get("encoding")
+    pd_encs = [enc_override] if enc_override else ENCODINGS
+    month_col = cfg.get("month_col")
+    ttype = cfg["type"]
+    CHUNK_SIZE = 200_000
+
+    # 월별 데이터 선삭제
+    if table_exists(con, name):
+        if month_col:
+            con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
+        else:
+            log.warning(f"  [{name}] month_col=null → 전체 교체")
+            con.execute(f"DELETE FROM {name}")
+
+    cnt = 0
+    if ttype == "fwf":
+        colspecs = [c[0] for c in cfg["cols"]]
+        col_names = [c[1] for c in cfg["cols"]]
+        numeric = cfg.get("numeric") or []
+        enc = cfg.get("encoding", "cp949")
+        f = open_file_binary(path)
+        try:
+            batch = []
+            for raw_line in f:
+                line = raw_line.rstrip(b"\r\n")
+                if not line:
+                    continue
+                batch.append(tuple(
+                    line[s:e].decode(enc, errors="replace").strip()
+                    for (s, e) in colspecs
+                ))
+                if len(batch) >= CHUNK_SIZE:
+                    chunk = pd.DataFrame(batch, columns=col_names).fillna("")
+                    chunk = _cast_numeric(chunk, numeric)
+                    _chunk_insert(con, name, chunk)
+                    cnt += len(chunk)
+                    del chunk, batch
+                    batch = []
+            if batch:
+                chunk = pd.DataFrame(batch, columns=col_names).fillna("")
+                chunk = _cast_numeric(chunk, numeric)
+                _chunk_insert(con, name, chunk)
+                cnt += len(chunk)
+        finally:
+            f.close()
+    else:
+        # pipe/csv
+        col_names = cfg["cols"]
+        numeric = cfg.get("numeric") or []
+        delimiter = cfg.get("delimiter", "|")
+        for enc in pd_encs:
+            try:
+                reader = pd.read_csv(
+                    path, sep=delimiter, names=col_names,
+                    dtype=str, header=None, encoding=enc,
+                    on_bad_lines="warn", chunksize=CHUNK_SIZE,
+                )
+                for chunk in reader:
+                    chunk = chunk.fillna("")
+                    chunk = _strip_str(chunk, exclude=numeric)
+                    chunk = _cast_numeric(chunk, numeric)
+                    _chunk_insert(con, name, chunk)
+                    cnt += len(chunk)
+                    del chunk
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            raise RuntimeError(f"pandas 인코딩 실패 (시도: {pd_encs})")
+
+    return cnt
+
+
+def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
+    """단일 native 테이블 로드. 레지스트리 체크 + DuckDB 읽기 + 폴백.
+    Returns: ("loaded"|"skipped"|"failed", name)
+    """
+    ts = time.time()
+    t = cfg.get("timeout", tmo)
+    timer = None
+    try:
+        path = _resolve_path(base_path, cfg["file"], yyyymm)
+
+        # 레지스트리 체크
+        if not force:
+            prev = _check_registry(con, name, path.name)
+            if prev:
+                cnt, loaded_at = prev
+                log.info(f"  [Skip] {_pad(name, 20)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
+                return "skipped"
+
+        log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
+
+        # 타임아웃
+        _interrupted = threading.Event()
+        if t > 0:
+            def _do_interrupt():
+                _interrupted.set()
+                try: con.interrupt()
+                except Exception: pass
+            timer = threading.Timer(t, _do_interrupt)
+            timer.daemon = True
+            timer.start()
+
+        # DuckDB 읽기
+        cnt, tmp_table = _read_native(con, path, name, cfg, yyyymm)
+        if timer:
+            timer.cancel()
+
+        # upsert
+        if tmp_table is not None:
+            _upsert_from_tmp(con, name, tmp_table, yyyymm, cfg.get("month_col"))
+
+        log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+        _update_registry(con, name, path.name, cnt)
+        return "loaded"
+
+    except Exception as e:
+        if timer:
+            timer.cancel()
+        elapsed = time.time() - ts
+        if hasattr(e, '__class__') and _interrupted.is_set():
+            log.warning(f"  [Read] {_pad(name, 20)} DuckDB 타임아웃 ({elapsed:.0f}초) → pandas 폴백")
+        else:
+            log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
+        # 커넥션 정리
+        try: con.execute("SELECT 1")
+        except Exception: pass
+
+        # pandas 폴백
+        try:
+            ts_fb = time.time()
+            cnt = _fallback_pandas(con, path, name, cfg, yyyymm)
+            log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
+            _update_registry(con, name, path.name, cnt)
+            return "loaded"
+        except Exception as e2:
+            log.error(f"  [Read] {_pad(name, 20)} 폴백도 실패: {e2}")
+            return "failed"
+
+
+def _load_other_tables(con, other_tables, base_path, yyyymm, tmo, force, loaded, failed):
+    """sas7bdat, oracle 등 병렬 읽기 + 순차 적재"""
+    # 레지스트리 체크
+    if not force:
+        skip = []
+        for name, cfg in other_tables.items():
+            if cfg.get("type") == "oracle":
+                continue
+            try:
+                path = _resolve_path(base_path, cfg["file"], yyyymm)
+                prev = _check_registry(con, name, path.name)
+                if prev:
+                    cnt, loaded_at = prev
+                    log.info(f"  [Skip] {_pad(name, 20)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
+                    loaded.append(name)
+                    skip.append(name)
+            except Exception:
+                pass
+        other_tables = {k: v for k, v in other_tables.items() if k not in skip}
+
+    if not other_tables:
+        return
+
+    results = []
+    workers = min(MAX_READ_WORKERS, len(other_tables))
+    log.info(f"  병렬 Read 시작 (workers={workers}, 테이블={len(other_tables)}개)")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            name: pool.submit(_read_one, name, cfg, base_path, yyyymm)
+            for name, cfg in other_tables.items()
+        }
+        for name, fut in futures.items():
+            t = other_tables[name].get("timeout", tmo)
+            try:
+                results.append(fut.result(timeout=t if t > 0 else None))
+            except TimeoutError:
+                log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
+                failed.append(name)
+            except FileNotFoundError:
+                log.warning(f"  [Read] {_pad(name, 20)} 파일 없음 — 건너뜀")
+                failed.append(name)
+            except Exception as e:
+                log.error(f"  [Read] {_pad(name, 20)} 실패: {e}")
+                failed.append(name)
+
+    log.info(f"  ── Load 시작 ({len(results)}개 테이블) ──")
+    for name, cfg, df in results:
+        if _shutdown.is_set():
+            log.warning("종료 요청으로 남은 Load 건너뜀")
+            break
+        try:
+            ts = time.time()
+            cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
+            log.info(f"  [Load] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+            file_name = cfg.get("file", "oracle")
+            if "{yyyymm}" in file_name:
+                try: file_name = _resolve_path(base_path, file_name, yyyymm).name
+                except Exception: pass
+            _update_registry(con, name, file_name, cnt)
+            loaded.append(name)
+        except Exception as e:
+            log.error(f"  [Load] {_pad(name, 20)} 실패: {e}")
+            failed.append(name)
+
+
 def do_load(con, yyyymm, tables: dict, timeout: int = None, force: bool = False):
-    """TABLES dict 기반 로드 (FWF → DuckDB 네이티브, 나머지 → 병렬 읽기+순차 적재)
+    """TABLES dict 기반 로드
 
     timeout: 테이블당 최대 읽기 시간(초). None이면 LOAD_TIMEOUT 사용, 0이면 무제한.
     force  : True면 레지스트리 무시하고 강제 재로드.
@@ -667,288 +935,27 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None, force: bool = False)
     loaded, failed = [], []
     tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
-    # 테이블 키의 {yyyymm} 플레이스홀더를 실제 월로 치환
     tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
-
-    # 로드 레지스트리 초기화
     _ensure_registry(con)
 
-    # DuckDB 네이티브 대상 (pipe, csv) / 나머지 (fwf, sas7bdat, oracle 등) 분리
-    # fwf 는 SAS colspec 이 바이트 위치이므로 SUBSTR(글자 기반) 대신
-    # 바이트 슬라이싱 pandas 경로를 사용해야 cp949 한글 위치가 밀리지 않음
-    # 단, 한글 없는 fwf 파일은 "native": True 를 명시하면 DuckDB 네이티브로 처리
-    native_types = {"pipe", "csv"}
-    def _is_native(cfg):
-        if cfg.get("type") == "fwf" and cfg.get("native"):
-            return True
-        return cfg.get("type") in native_types
+    # native (pipe, csv, fwf+native) / other (fwf, sas7bdat, oracle) 분리
     native_tables = {k: v for k, v in tables.items() if _is_native(v)}
     other_tables = {k: v for k, v in tables.items() if k not in native_tables}
 
-    # ── FWF / Pipe: DuckDB 네이티브 읽기 (pandas 우회) ──
+    # 1. native 테이블: 순차 로드 (DuckDB 직접 읽기 + pandas 폴백)
     for name, cfg in native_tables.items():
         if _shutdown.is_set():
             log.warning("종료 요청으로 남은 테이블 건너뜀")
             break
-        ttype = cfg["type"]
-        timer = None
-        ts = time.time()
-        t = cfg.get("timeout", tmo)  # 테이블별 timeout 우선
-        try:
-            path = _resolve_path(base_path, cfg["file"], yyyymm)
-
-            # 레지스트리 체크: 같은 파일로 이미 로드됐으면 스킵
-            if not force:
-                prev = _check_registry(con, name, path.name)
-                if prev:
-                    cnt, loaded_at = prev
-                    log.info(f"  [Skip] {_pad(name, 20)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
-                    loaded.append(name)
-                    continue
-
-            log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
-
-            # 타임아웃 설정: 시간 초과 시 con.interrupt()로 쿼리 취소
-            _interrupted = threading.Event()
-            if t > 0:
-                def _do_interrupt():
-                    _interrupted.set()
-                    try:
-                        con.interrupt()
-                    except Exception:
-                        pass
-                timer = threading.Timer(t, _do_interrupt)
-                timer.daemon = True
-                timer.start()
-
-            # 테이블 정의에 encoding 있으면 우선 사용
-            enc_override = cfg.get("encoding")
-            encs = [enc_override] if enc_override else None
-
-            if ttype == "fwf":
-                cnt = read_fwf_duckdb(con, path, cfg["cols"], cfg.get("numeric"),
-                                      encodings=encs)
-                tmp_table = "_fwf_parsed"
-            elif ttype == "csv":
-                cnt = read_csv_duckdb(con, path, cfg.get("cols"),
-                                      cfg.get("numeric"),
-                                      cfg.get("delimiter", ","),
-                                      cfg.get("header", False),
-                                      encodings=encs,
-                                      fast=cfg.get("fast"))
-                tmp_table = "_csv_parsed"
-            else:  # pipe
-                month_col = cfg.get("month_col")
-                exists = table_exists(con, name)
-                # month_col 부분교체: 임시 테이블 경유 (기존 데이터 보존)
-                # 그 외(신규 or 전체교체): 최종 테이블에 직접 적재 (메모리 절약)
-                if exists and month_col:
-                    cnt = read_pipe_duckdb(con, path, cfg["cols"],
-                                           cfg.get("numeric"),
-                                           bigint=cfg.get("bigint"),
-                                           delimiter=cfg.get("delimiter", "|"),
-                                           encodings=encs,
-                                           fast=cfg.get("fast"),
-                                           preconvert=cfg.get("preconvert", False),
-                                           select_cols=cfg.get("select_cols"))
-                    tmp_table = "_pipe_parsed"
-                else:
-                    if exists:
-                        con.execute(f"DROP TABLE {name}")
-                    cnt = read_pipe_duckdb(con, path, cfg["cols"],
-                                           cfg.get("numeric"),
-                                           bigint=cfg.get("bigint"),
-                                           delimiter=cfg.get("delimiter", "|"),
-                                           encodings=encs,
-                                           fast=cfg.get("fast"),
-                                           target_table=name,
-                                           preconvert=cfg.get("preconvert", False),
-                                           select_cols=cfg.get("select_cols"))
-                    tmp_table = None
-
-            if timer:
-                timer.cancel()
-
-            # tmp → 실제 테이블로 upsert (pipe 직접 적재 시 스킵)
-            if tmp_table is not None:
-                month_col = cfg.get("month_col")
-                if not table_exists(con, name):
-                    con.execute(f"CREATE TABLE {name} AS SELECT * FROM {tmp_table}")
-                else:
-                    if month_col:
-                        con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
-                    else:
-                        con.execute(f"DELETE FROM {name}")
-                    con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
-                con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
-            log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
-            _update_registry(con, name, path.name, cnt)
+        result = _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force)
+        if result == "loaded" or result == "skipped":
             loaded.append(name)
-        except Exception as e:
-            if timer:
-                timer.cancel()
-            elapsed = time.time() - ts
-            # 타임아웃 여부 판별
-            is_timeout = _interrupted.is_set()
-            if is_timeout:
-                log.warning(f"  [Read] {_pad(name, 20)} DuckDB 타임아웃 ({elapsed:.0f}초) → pandas 청크 폴백")
-            else:
-                log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 청크 폴백")
-            # con.interrupt() 후 커넥션 정리 — 잔여 에러 소진
-            try:
-                con.execute("SELECT 1")
-            except Exception:
-                pass
-            try:
-                ts_fb = time.time()
-                pd_encs = [enc_override] if enc_override else ENCODINGS
-                month_col = cfg.get("month_col")
-                CHUNK_SIZE = 200_000
-
-                # 월별 데이터 선삭제 (청크 INSERT 전)
-                if table_exists(con, name):
-                    if month_col:
-                        con.execute(f"DELETE FROM {name} WHERE CAST({month_col} AS VARCHAR) LIKE '{yyyymm}%'")
-                    else:
-                        log.warning(f"  [{name}] month_col=null → 전체 교체 (기존 데이터 삭제)")
-                        con.execute(f"DELETE FROM {name}")
-
-                cnt = 0
-                if ttype == "fwf":
-                    # fwf: 바이트 슬라이싱으로 청크 단위 읽기 → DuckDB INSERT
-                    from dat_loader import open_file_binary, _cast_numeric
-                    colspecs = [c[0] for c in cfg["cols"]]
-                    col_names = [c[1] for c in cfg["cols"]]
-                    numeric = cfg.get("numeric") or []
-                    enc = cfg.get("encoding", "cp949")
-                    f = open_file_binary(path)
-                    try:
-                        batch = []
-                        for raw_line in f:
-                            line = raw_line.rstrip(b"\r\n")
-                            if not line:
-                                continue
-                            batch.append(tuple(
-                                line[s:e].decode(enc, errors="replace").strip()
-                                for (s, e) in colspecs
-                            ))
-                            if len(batch) >= CHUNK_SIZE:
-                                chunk = pd.DataFrame(batch, columns=col_names).fillna("")
-                                chunk = _cast_numeric(chunk, numeric)
-                                _chunk_insert(con, name, chunk)
-                                cnt += len(chunk)
-                                del chunk, batch
-                                batch = []
-                        if batch:
-                            chunk = pd.DataFrame(batch, columns=col_names).fillna("")
-                            chunk = _cast_numeric(chunk, numeric)
-                            _chunk_insert(con, name, chunk)
-                            cnt += len(chunk)
-                    finally:
-                        f.close()
-                else:
-                    # pipe/csv: pd.read_csv chunksize로 청크 단위 읽기
-                    from dat_loader import open_file, _cast_numeric, _strip_str
-                    col_names = cfg["cols"]
-                    numeric = cfg.get("numeric") or []
-                    delimiter = cfg.get("delimiter", "|")
-                    for enc in pd_encs:
-                        try:
-                            reader = pd.read_csv(
-                                path, sep=delimiter, names=col_names,
-                                dtype=str, header=None, encoding=enc,
-                                on_bad_lines="warn", chunksize=CHUNK_SIZE,
-                            )
-                            for chunk in reader:
-                                chunk = chunk.fillna("")
-                                chunk = _strip_str(chunk, exclude=numeric)
-                                chunk = _cast_numeric(chunk, numeric)
-                                _chunk_insert(con, name, chunk)
-                                cnt += len(chunk)
-                                del chunk
-                            break
-                        except UnicodeDecodeError:
-                            continue
-                    else:
-                        raise RuntimeError(f"pandas 인코딩 실패 (시도: {pd_encs})")
-
-                log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
-                _update_registry(con, name, path.name, cnt)
-                loaded.append(name)
-            except TimeoutError:
-                log.error(f"  [Read] {_pad(name, 20)} 폴백 타임아웃 ({t}초 초과) — 건너뜀")
-                failed.append(name)
-            except Exception as e2:
-                log.error(f"  [Read] {_pad(name, 20)} 폴백도 실패: {e2}")
-                failed.append(name)
-
-    # ── 나머지 (sas7bdat, oracle 등): 병렬 읽기 + 순차 적재 ──
-    if other_tables:
-        # 레지스트리 체크: 이미 로드된 테이블 스킵
-        if not force:
-            skip_tables = []
-            for name, cfg in other_tables.items():
-                if cfg.get("type") == "oracle":
-                    continue  # Oracle은 파일이 아니므로 레지스트리 체크 불가
-                try:
-                    path = _resolve_path(base_path, cfg["file"], yyyymm)
-                    prev = _check_registry(con, name, path.name)
-                    if prev:
-                        cnt, loaded_at = prev
-                        log.info(f"  [Skip] {_pad(name, 20)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
-                        loaded.append(name)
-                        skip_tables.append(name)
-                except Exception:
-                    pass
-            other_tables = {k: v for k, v in other_tables.items() if k not in skip_tables}
-
-        if not other_tables:
-            pass  # 모두 스킵됨
         else:
-            results = []
-            workers = min(MAX_READ_WORKERS, len(other_tables))
-            log.info(f"  병렬 Read 시작 (workers={workers}, 테이블={len(other_tables)}개)")
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    name: pool.submit(_read_one, name, cfg, base_path, yyyymm)
-                    for name, cfg in other_tables.items()
-                }
-                for name, fut in futures.items():
-                    t = other_tables[name].get("timeout", tmo)
-                    try:
-                        result_timeout = t if t > 0 else None
-                        results.append(fut.result(timeout=result_timeout))
-                    except TimeoutError:
-                        log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
-                        failed.append(name)
-                    except FileNotFoundError:
-                        log.warning(f"  [Read] {_pad(name, 20)} 파일 없음 — 건너뜀")
-                        failed.append(name)
-                    except Exception as e:
-                        log.error(f"  [Read] {_pad(name, 20)} 실패: {e}")
-                        failed.append(name)
+            failed.append(name)
 
-            log.info(f"  ── Load 시작 ({len(results)}개 테이블) ──")
-            for name, cfg, df in results:
-                if _shutdown.is_set():
-                    log.warning("종료 요청으로 남은 Load 건너뜀")
-                    break
-                try:
-                    ts = time.time()
-                    cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-                    log.info(f"  [Load] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
-                    # 파일명 추출 (Oracle은 제외)
-                    file_name = cfg.get("file", "oracle")
-                    if "{yyyymm}" in file_name:
-                        try:
-                            file_name = _resolve_path(base_path, file_name, yyyymm).name
-                        except Exception:
-                            pass
-                    _update_registry(con, name, file_name, cnt)
-                    loaded.append(name)
-                except Exception as e:
-                    log.error(f"  [Load] {_pad(name, 20)} 실패: {e}")
-                    failed.append(name)
+    # 2. other 테이블: 병렬 읽기 + 순차 적재
+    if other_tables:
+        _load_other_tables(con, other_tables, base_path, yyyymm, tmo, force, loaded, failed)
 
     return loaded, failed
 
