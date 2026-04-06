@@ -129,6 +129,8 @@ def main():
     jobs = mod.JOBS
     timeout = args.timeout or getattr(mod, "TIMEOUT", 0)
     load_timeout = getattr(mod, "LOAD_TIMEOUT", None)
+    db_name_tpl = getattr(mod, "DB_NAME", "${SDM}.duckdb")
+    attach_tpl = getattr(mod, "ATTACH", {})
 
     log.info(f"런셋: {cfg_path.name}")
     log.info(f"대상 월: {', '.join(ym_list)}")
@@ -178,8 +180,11 @@ def main():
     results = []
 
     def _open_con(yyyymm):
-        """월별 DuckDB 연결 생성"""
-        db_path = ROOT / "db" / f"{yyyymm}.duckdb"
+        """DuckDB 연결 생성 (DB_NAME 템플릿 기반)"""
+        from sas_to_duckdb import build_params, _replace_params
+        params = build_params(yyyymm)
+        db_file = _replace_params(db_name_tpl, params)
+        db_path = ROOT / "db" / db_file
         db_path.parent.mkdir(parents=True, exist_ok=True)
         log.info(f"DB: {db_path}")
         c = duckdb.connect(str(db_path))
@@ -222,6 +227,8 @@ def main():
                 log.info(f"━" * 60)
 
                 try:
+                    # attach 설정: 런셋 전역 + JOB별 오버라이드
+                    job_attach = {**attach_tpl, **job_cfg.get("attach", {})}
                     run_job(
                         con, job_mod, yyyymm,
                         skip_load=job_cfg.get("skip_load", False),
@@ -229,6 +236,7 @@ def main():
                         only_tables=job_cfg.get("tables"),
                         load_timeout=job_cfg.get("load_timeout") or load_timeout,
                         force_load=job_cfg.get("force_load", False),
+                        attach_dbs=job_attach or None,
                     )
                     results.append((f"{yyyymm}/{job_name}", 0))
                 except Exception as e:
