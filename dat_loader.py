@@ -482,7 +482,8 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                      bigint: list = None,
                      delimiter: str = "|", encodings: list = None,
                      fast: bool = None, target_table: str = None,
-                     preconvert: bool = False, select_cols: list = None):
+                     preconvert: bool = False, select_cols: list = None,
+                     trim: bool = False):
     """
     DuckDB 네이티브 파이프 구분자 읽기 — pandas 우회, C++ 엔진으로 직접 처리
 
@@ -591,7 +592,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         if name not in use_set:
             continue
         src = f"column{str(i).zfill(pad)}"
-        base = src
+        base = f"TRIM({src})" if trim else src
         if name in numeric_set:
             cast_type = numeric_type[name]
             base = f"TRY_CAST({base} AS {cast_type})"

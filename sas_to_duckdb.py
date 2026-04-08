@@ -204,7 +204,7 @@ def sql(con, label, query, params=None):
     if m:
         tbl = m.group(1)
         cnt = con.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
-        log.info(f"  {_pad(label, 50)}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
+        log.info(f"  {_pad(label, 40)}  {cnt:>12,}건  ({time.time()-t:.1f}초)")
 
 
 def sql_file(con, label, path, **extra_params):
@@ -269,7 +269,7 @@ def require_tables(con, *names):
     missing = [n for n in names if not table_exists(con, n)]
     if missing:
         for n in missing:
-            log.warning(f"  [--] {_pad(n, 45)}  테이블 없음 — 건너뜀")
+            log.warning(f"  [--] {_pad(n, 40)}  테이블 없음 — 건너뜀")
         return False
     return True
 
@@ -288,7 +288,7 @@ def check(con, label, query, expect="zero"):
         row = con.execute(query).fetchone()
     except Exception as e:
         if "not found" in str(e).lower() or "does not exist" in str(e).lower():
-            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            log.warning(f"  [--] {_pad(label, 40)}  테이블 없음 — 건너뜀")
             return False
         raise
     cnt = row[0] if row else 0
@@ -299,7 +299,7 @@ def check(con, label, query, expect="zero"):
     else:
         ok = cnt == expect
     mark = "OK" if ok else "NG"
-    log.info(f"  [{mark}] {_pad(label, 45)}  {cnt:>12,}건")
+    log.info(f"  [{mark}] {_pad(label, 40)}  {cnt:>12,}건")
     return ok
 
 
@@ -317,12 +317,12 @@ def check_sum(con, label, query):
         row = con.execute(query).fetchone()
     except Exception as e:
         if "not found" in str(e).lower() or "does not exist" in str(e).lower():
-            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            log.warning(f"  [--] {_pad(label, 40)}  테이블 없음 — 건너뜀")
             return
         raise
     cols = [d[0] for d in con.description]
     if not row:
-        log.info(f"  [--] {_pad(label, 45)}  데이터 없음")
+        log.info(f"  [--] {_pad(label, 40)}  데이터 없음")
         return
     parts = []
     for c, v in zip(cols, row):
@@ -332,7 +332,7 @@ def check_sum(con, label, query):
             parts.append(f"{c}: {v:>14,.0f}")
         else:
             parts.append(f"{c}: {v}")
-    log.info(f"  [OK] {_pad(label, 45)}  {' | '.join(parts)}")
+    log.info(f"  [OK] {_pad(label, 40)}  {' | '.join(parts)}")
 
 
 def check_diff(con, label, query_a, query_b, group_cols, sum_col,
@@ -366,13 +366,13 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
         rows = con.execute(diff_sql).fetchall()
     except Exception as e:
         if "not found" in str(e).lower() or "does not exist" in str(e).lower():
-            log.warning(f"  [--] {_pad(label, 45)}  테이블 없음 — 건너뜀")
+            log.warning(f"  [--] {_pad(label, 40)}  테이블 없음 — 건너뜀")
             return True
         raise
     total = len(rows)
     ok = total == 0
     mark = "OK" if ok else "NG"
-    log.info(f"  [{mark}] {_pad(label, 45)}  차이 {total:,}건")
+    log.info(f"  [{mark}] {_pad(label, 40)}  차이 {total:,}건")
 
     if not ok:
         show = rows[:20]
@@ -410,7 +410,7 @@ def row_count(con, table, group_by=None, where=None):
     if where:
         where = _replace_params(where, _sql_params)
     if not table_exists(con, table):
-        log.warning(f"  [--] {_pad(table, 45)}  테이블 없음")
+        log.warning(f"  [--] {_pad(table, 40)}  테이블 없음")
         return 0
     w = f" WHERE {where}" if where else ""
     if group_by:
@@ -422,11 +422,11 @@ def row_count(con, table, group_by=None, where=None):
         for row in rows:
             key = " | ".join(str(v) for v in row[:-1])
             total += row[-1]
-            log.info(f"  [OK] {_pad(table, 30)}  {key:>14s}  {row[-1]:>12,}건")
-        log.info(f"  [OK] {_pad(table, 30)}  {'합계':>14s}  {total:>12,}건")
+            log.info(f"  [OK] {_pad(table, 40)}  {key:>14s}  {row[-1]:>12,}건")
+        log.info(f"  [OK] {_pad(table, 40)}  {'합계':>14s}  {total:>12,}건")
         return total
     cnt = con.execute(f"SELECT COUNT(*) FROM {table}{w}").fetchone()[0]
-    log.info(f"  [OK] {_pad(table, 45)}  {cnt:>12,}건")
+    log.info(f"  [OK] {_pad(table, 40)}  {cnt:>12,}건")
     return cnt
 
 
@@ -518,7 +518,7 @@ def _load_oracle(cfg, name, yyyymm):
     else:
         sql_text = cfg["sql"].replace("{yyyymm}", yyyymm)
 
-    log.info(f"  [Oracle] {_pad(name, 20)} ← {dsn}")
+    log.info(f"  [Oracle] {_pad(name, 30)} ← {dsn}")
     log.debug(f"  [Oracle] SQL: {sql_text[:120]}...")
 
     fetch_size = cfg.get("fetch_size", 50_000)
@@ -536,7 +536,7 @@ def _load_oracle(cfg, name, yyyymm):
                 if not rows:
                     break
                 chunks.append(rows)
-                log.debug(f"  [Oracle] {_pad(name, 20)} {sum(len(c) for c in chunks):,}건 읽는 중...")
+                log.debug(f"  [Oracle] {_pad(name, 30)} {sum(len(c) for c in chunks):,}건 읽는 중...")
 
             import pandas as pd
             if chunks:
@@ -549,7 +549,7 @@ def _load_oracle(cfg, name, yyyymm):
         log.error(f"  [Oracle] SQL:\n{sql_text}")
         raise
 
-    log.info(f"  [Oracle] {_pad(name, 20)} {len(df):>12,}건")
+    log.info(f"  [Oracle] {_pad(name, 30)} {len(df):>12,}건")
     return df
 
 
@@ -655,12 +655,12 @@ def _read_one(name, cfg, base_path, yyyymm):
     ts = time.time()
     if cfg.get("type") == "oracle":
         df = _load_oracle(cfg, name, yyyymm)
-        log.info(f"  [Read] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [Read] {_pad(name, 30)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     else:
         path = _resolve_path(base_path, cfg["file"], yyyymm)
-        log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
+        log.info(f"  [Read] {_pad(name, 30)} ← {path.name}")
         df = _load_file(path, cfg, name)
-        log.info(f"  [Read] {_pad(name, 20)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [Read] {_pad(name, 30)} {len(df):>12,}건  ({time.time()-ts:.1f}초)")
     return name, cfg, df
 
 
@@ -710,6 +710,7 @@ def _read_native(con, path, name, cfg, yyyymm):
         fast=cfg.get("fast"),
         preconvert=cfg.get("preconvert", False),
         select_cols=cfg.get("select_cols"),
+        trim=cfg.get("trim", False),
     )
     if exists and month_col:
         cnt = read_pipe_duckdb(con, path, cfg["cols"], cfg.get("numeric"), **pipe_kwargs)
@@ -809,15 +810,15 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
     try:
         path = _resolve_path(base_path, cfg["file"], yyyymm)
 
-        # 레지스트리 체크
-        if not force:
+        # 레지스트리 체크 (force 또는 테이블별 overwrite 시 건너뜀)
+        if not force and not cfg.get("overwrite", False):
             prev = _check_registry(con, name, path.name)
             if prev:
                 cnt, loaded_at = prev
-                log.info(f"  [Skip] {_pad(name, 20)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
+                log.info(f"  [Skip] {_pad(name, 30)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
                 return "skipped"
 
-        log.info(f"  [Read] {_pad(name, 20)} ← {path.name}")
+        log.info(f"  [Read] {_pad(name, 30)} ← {path.name}")
 
         # 타임아웃
         _interrupted = threading.Event()
@@ -839,7 +840,7 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
         if tmp_table is not None:
             _upsert_from_tmp(con, name, tmp_table, yyyymm, cfg.get("month_col"))
 
-        log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+        log.info(f"  [Read] {_pad(name, 30)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
         _update_registry(con, name, path.name, cnt)
         return "loaded"
 
@@ -848,9 +849,9 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
             timer.cancel()
         elapsed = time.time() - ts
         if hasattr(e, '__class__') and _interrupted.is_set():
-            log.warning(f"  [Read] {_pad(name, 20)} DuckDB 타임아웃 ({elapsed:.0f}초) → pandas 폴백")
+            log.warning(f"  [Read] {_pad(name, 30)} DuckDB 타임아웃 ({elapsed:.0f}초) → pandas 폴백")
         else:
-            log.warning(f"  [Read] {_pad(name, 20)} DuckDB 실패({e}) → pandas 폴백")
+            log.warning(f"  [Read] {_pad(name, 30)} DuckDB 실패({e}) → pandas 폴백")
         # 커넥션 정리
         try: con.execute("SELECT 1")
         except Exception: pass
@@ -859,11 +860,11 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
         try:
             ts_fb = time.time()
             cnt = _fallback_pandas(con, path, name, cfg, yyyymm)
-            log.info(f"  [Read] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
+            log.info(f"  [Read] {_pad(name, 30)} {cnt:>12,}건  ({time.time()-ts_fb:.1f}초)  (폴백)")
             _update_registry(con, name, path.name, cnt)
             return "loaded"
         except Exception as e2:
-            log.error(f"  [Read] {_pad(name, 20)} 폴백도 실패: {e2}")
+            log.error(f"  [Read] {_pad(name, 30)} 폴백도 실패: {e2}")
             return "failed"
 
 
@@ -873,14 +874,14 @@ def _load_other_tables(con, other_tables, base_path, yyyymm, tmo, force, loaded,
     if not force:
         skip = []
         for name, cfg in other_tables.items():
-            if cfg.get("type") == "oracle":
+            if cfg.get("type") == "oracle" or cfg.get("overwrite", False):
                 continue
             try:
                 path = _resolve_path(base_path, cfg["file"], yyyymm)
                 prev = _check_registry(con, name, path.name)
                 if prev:
                     cnt, loaded_at = prev
-                    log.info(f"  [Skip] {_pad(name, 20)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
+                    log.info(f"  [Skip] {_pad(name, 30)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
                     loaded.append(name)
                     skip.append(name)
             except Exception:
@@ -903,13 +904,13 @@ def _load_other_tables(con, other_tables, base_path, yyyymm, tmo, force, loaded,
             try:
                 results.append(fut.result(timeout=t if t > 0 else None))
             except TimeoutError:
-                log.error(f"  [Read] {_pad(name, 20)} 타임아웃 ({t}초 초과) — 건너뜀")
+                log.error(f"  [Read] {_pad(name, 30)} 타임아웃 ({t}초 초과) — 건너뜀")
                 failed.append(name)
             except FileNotFoundError:
-                log.warning(f"  [Read] {_pad(name, 20)} 파일 없음 — 건너뜀")
+                log.warning(f"  [Read] {_pad(name, 30)} 파일 없음 — 건너뜀")
                 failed.append(name)
             except Exception as e:
-                log.error(f"  [Read] {_pad(name, 20)} 실패: {e}")
+                log.error(f"  [Read] {_pad(name, 30)} 실패: {e}")
                 failed.append(name)
 
     log.info(f"  ── Load 시작 ({len(results)}개 테이블) ──")
@@ -920,7 +921,7 @@ def _load_other_tables(con, other_tables, base_path, yyyymm, tmo, force, loaded,
         try:
             ts = time.time()
             cnt = _upsert(con, name, df, yyyymm, cfg.get("month_col"))
-            log.info(f"  [Load] {_pad(name, 20)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
+            log.info(f"  [Load] {_pad(name, 30)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
             file_name = cfg.get("file", "oracle")
             if "{yyyymm}" in file_name:
                 try: file_name = _resolve_path(base_path, file_name, yyyymm).name
@@ -928,7 +929,7 @@ def _load_other_tables(con, other_tables, base_path, yyyymm, tmo, force, loaded,
             _update_registry(con, name, file_name, cnt)
             loaded.append(name)
         except Exception as e:
-            log.error(f"  [Load] {_pad(name, 20)} 실패: {e}")
+            log.error(f"  [Load] {_pad(name, 30)} 실패: {e}")
             failed.append(name)
 
 
@@ -1076,7 +1077,7 @@ def do_export(con, yyyymm, job_name, sheet_map):
                     sql, sheet = _build_export_query(tbl, single_cfg, yyyymm)
                     df = con.execute(sql).df()
                     if len(df) == 0:
-                        log.info(f"    {_pad(sheet[:31], 25)}  0건 — 출력 제외")
+                        log.info(f"    {_pad(sheet[:31], 30)}  {'0':>12s}건 — 출력 제외")
                         continue
                     sname = sheet[:31]
                     df.to_excel(writer, sheet_name=sname, index=False)
@@ -1089,7 +1090,7 @@ def do_export(con, yyyymm, job_name, sheet_map):
                                 ws.cell(row=row_idx, column=col_idx).number_format = fmt
                     el = time.time() - ts
                     summary.append((tbl, sname, len(df), el))
-                    log.info(f"    {_pad(sname, 25)}  {len(df):>10,}건  ({el:.1f}초)")
+                    log.info(f"    {_pad(sname, 30)}  {len(df):>12,}건  ({el:.1f}초)")
                 except Exception as e:
                     err_sheet = (single_cfg if isinstance(single_cfg, str) else single_cfg.get("sheet", tbl)).replace("{yyyymm}", yyyymm)
                     log.warning(f"    {err_sheet} 건너뜀: {e}")
