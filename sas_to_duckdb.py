@@ -809,8 +809,8 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
     try:
         path = _resolve_path(base_path, cfg["file"], yyyymm)
 
-        # 레지스트리 체크
-        if not force:
+        # 레지스트리 체크 (force 또는 테이블별 overwrite 시 건너뜀)
+        if not force and not cfg.get("overwrite", False):
             prev = _check_registry(con, name, path.name)
             if prev:
                 cnt, loaded_at = prev
@@ -873,7 +873,7 @@ def _load_other_tables(con, other_tables, base_path, yyyymm, tmo, force, loaded,
     if not force:
         skip = []
         for name, cfg in other_tables.items():
-            if cfg.get("type") == "oracle":
+            if cfg.get("type") == "oracle" or cfg.get("overwrite", False):
                 continue
             try:
                 path = _resolve_path(base_path, cfg["file"], yyyymm)
