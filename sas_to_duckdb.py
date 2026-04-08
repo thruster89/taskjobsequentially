@@ -710,6 +710,7 @@ def _read_native(con, path, name, cfg, yyyymm):
         fast=cfg.get("fast"),
         preconvert=cfg.get("preconvert", False),
         select_cols=cfg.get("select_cols"),
+        trim=cfg.get("trim", False),
     )
     if exists and month_col:
         cnt = read_pipe_duckdb(con, path, cfg["cols"], cfg.get("numeric"), **pipe_kwargs)
