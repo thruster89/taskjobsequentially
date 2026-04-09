@@ -849,26 +849,25 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
 
         # DuckDB 읽기
         if is_multi:
-            # 분할 파일: 첫 파일로 테이블 생성 → 나머지 INSERT
-            total_cnt = 0
-            for pi, p in enumerate(paths):
-                log.info(f"  [Read] {_pad(name, 30)} [{pi+1}/{len(paths)}] {p.name}")
-                if pi == 0:
-                    cnt, tmp_table = _read_native(con, p, name, cfg, yyyymm)
-                    if tmp_table is not None:
-                        _upsert_from_tmp(con, name, tmp_table, yyyymm, cfg.get("month_col"))
-                else:
-                    # 2번째부터: 임시 테이블로 읽고 INSERT
-                    cnt, tmp_table = _read_native(con, p, name, cfg, yyyymm)
-                    if tmp_table is not None:
-                        con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
-                        con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
-                    elif tmp_table is None:
-                        # target_table=name으로 직접 적재된 경우 — 이미 들어가 있음
-                        pass
-                total_cnt += cnt
-            cnt = total_cnt
-            tmp_table = None  # 이미 처리 완료
+            # 분할 파일: glob 패턴을 DuckDB read_csv에 직접 전달
+            from dat_loader import read_pipe_duckdb
+            glob_str = str(base_path / cfg["file"].format(yyyymm=yyyymm))
+            enc_override = cfg.get("encoding")
+            pipe_kwargs = dict(
+                bigint=cfg.get("bigint"),
+                delimiter=cfg.get("delimiter", "|"),
+                encodings=[enc_override] if enc_override else ["utf-8"],
+                fast=cfg.get("fast"),
+                preconvert=False,  # glob에서는 사전변환 불가
+                select_cols=cfg.get("select_cols"),
+                trim=cfg.get("trim", False),
+            )
+            # 기존 테이블 있으면 DROP (전체 교체)
+            if table_exists(con, name):
+                con.execute(f"DROP TABLE {name}")
+            cnt = read_pipe_duckdb(con, Path(glob_str), cfg["cols"], cfg.get("numeric"),
+                                   target_table=name, **pipe_kwargs)
+            tmp_table = None
         else:
             cnt, tmp_table = _read_native(con, path, name, cfg, yyyymm)
         if timer:
