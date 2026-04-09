@@ -516,9 +516,15 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     # ── fast 모드 / gz 여부 판별 ──
     use_fast = fast if fast is not None else str(path).endswith('.gz')
     is_gz = str(path).endswith('.gz')
+    is_glob = "*" in str(path) or "?" in str(path)
+
+    # ── glob 패턴 (multi 파일): 인코딩 감지/변환 불가 → 명시된 인코딩으로 직접 읽기 ──
+    if is_glob:
+        enc = enc_list[0] if enc_list else "utf-8"
+        log.info(f"    glob 모드: {enc} 직접 읽기 ({path})")
 
     # ── preconvert: 인코딩 감지 없이 바로 cp949→utf-8 변환 ──
-    if preconvert:
+    elif preconvert:
         t0 = time.time()
         log.info(f"    preconvert: decompress_gz 사전 변환 시작")
         path = decompress_gz(path)

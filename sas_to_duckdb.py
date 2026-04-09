@@ -847,13 +847,33 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
             timer.daemon = True
             timer.start()
 
-        # DuckDB 읽기 (multi면 glob 패턴으로 전달)
-        read_path = Path(glob_pattern) if glob_pattern else path
-        cnt, tmp_table = _read_native(con, read_path, name, cfg, yyyymm)
+        # DuckDB 읽기
+        if is_multi:
+            # 분할 파일: glob 패턴을 DuckDB read_csv에 직접 전달
+            from dat_loader import read_pipe_duckdb
+            glob_str = str(base_path / cfg["file"].format(yyyymm=yyyymm))
+            enc_override = cfg.get("encoding")
+            pipe_kwargs = dict(
+                bigint=cfg.get("bigint"),
+                delimiter=cfg.get("delimiter", "|"),
+                encodings=[enc_override] if enc_override else ["utf-8"],
+                fast=cfg.get("fast"),
+                preconvert=False,  # glob에서는 사전변환 불가
+                select_cols=cfg.get("select_cols"),
+                trim=cfg.get("trim", False),
+            )
+            # 기존 테이블 있으면 DROP (전체 교체)
+            if table_exists(con, name):
+                con.execute(f"DROP TABLE {name}")
+            cnt = read_pipe_duckdb(con, Path(glob_str), cfg["cols"], cfg.get("numeric"),
+                                   target_table=name, **pipe_kwargs)
+            tmp_table = None
+        else:
+            cnt, tmp_table = _read_native(con, path, name, cfg, yyyymm)
         if timer:
             timer.cancel()
 
-        # upsert
+        # upsert (multi가 아닌 경우만)
         if tmp_table is not None:
             _upsert_from_tmp(con, name, tmp_table, yyyymm, cfg.get("month_col"))
 
