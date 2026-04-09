@@ -571,8 +571,15 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
 
     # 샘플 1줄로 실제 파이프 수(=컬럼 수) 파악
     actual_cols = n_cols
+    # glob 패턴이면 첫 번째 매칭 파일로 샘플링
+    sample_path = path
+    if is_glob:
+        import glob as _glob
+        matches = sorted(_glob.glob(str(path)))
+        if matches:
+            sample_path = Path(matches[0])
     try:
-        f = open_file_binary(path)
+        f = open_file_binary(sample_path)
         try:
             first_line = f.readline(1024 * 1024)
         finally:
