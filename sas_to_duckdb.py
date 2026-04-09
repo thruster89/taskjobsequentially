@@ -847,13 +847,34 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
             timer.daemon = True
             timer.start()
 
-        # DuckDB 읽기 (multi면 glob 패턴으로 전달)
-        read_path = Path(glob_pattern) if glob_pattern else path
-        cnt, tmp_table = _read_native(con, read_path, name, cfg, yyyymm)
+        # DuckDB 읽기
+        if is_multi:
+            # 분할 파일: 첫 파일로 테이블 생성 → 나머지 INSERT
+            total_cnt = 0
+            for pi, p in enumerate(paths):
+                log.info(f"  [Read] {_pad(name, 30)} [{pi+1}/{len(paths)}] {p.name}")
+                if pi == 0:
+                    cnt, tmp_table = _read_native(con, p, name, cfg, yyyymm)
+                    if tmp_table is not None:
+                        _upsert_from_tmp(con, name, tmp_table, yyyymm, cfg.get("month_col"))
+                else:
+                    # 2번째부터: 임시 테이블로 읽고 INSERT
+                    cnt, tmp_table = _read_native(con, p, name, cfg, yyyymm)
+                    if tmp_table is not None:
+                        con.execute(f"INSERT INTO {name} SELECT * FROM {tmp_table}")
+                        con.execute(f"DROP TABLE IF EXISTS {tmp_table}")
+                    elif tmp_table is None:
+                        # target_table=name으로 직접 적재된 경우 — 이미 들어가 있음
+                        pass
+                total_cnt += cnt
+            cnt = total_cnt
+            tmp_table = None  # 이미 처리 완료
+        else:
+            cnt, tmp_table = _read_native(con, path, name, cfg, yyyymm)
         if timer:
             timer.cancel()
 
-        # upsert
+        # upsert (multi가 아닌 경우만)
         if tmp_table is not None:
             _upsert_from_tmp(con, name, tmp_table, yyyymm, cfg.get("month_col"))
 
