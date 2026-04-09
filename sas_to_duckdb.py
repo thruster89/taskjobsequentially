@@ -430,8 +430,12 @@ def row_count(con, table, group_by=None, where=None):
     return cnt
 
 
-def _resolve_path(base, file_template, yyyymm):
-    """파일 확장자 순서대로 탐색. glob 와일드카드(*, ?) 지원."""
+def _resolve_path(base, file_template, yyyymm, multi=False):
+    """파일 확장자 순서대로 탐색. glob 와일드카드(*, ?) 지원.
+
+    multi=True: 매칭된 파일 전체 리스트 반환.
+    multi=False: 최신 1개만 반환 (기본).
+    """
     rendered = file_template.format(yyyymm=yyyymm)
     is_glob = "*" in rendered or "?" in rendered
 
@@ -439,15 +443,16 @@ def _resolve_path(base, file_template, yyyymm):
         # glob 패턴: 확장자 포함 여부에 따라 처리
         has_ext = any(rendered.lower().endswith(ext) for ext in FILE_EXTENSIONS)
         if has_ext:
-            # 확장자 명시: "btLtrJ930_020_{yyyymm}_*.dat.gz"
             matches = sorted(base.glob(rendered))
         else:
-            # 확장자 미명시: 모든 확장자 시도
             matches = []
             for ext in FILE_EXTENSIONS:
                 matches.extend(sorted(base.glob(f"{rendered}{ext}")))
         if not matches:
             raise FileNotFoundError(f"패턴 매칭 실패: {rendered} (위치: {base})")
+        if multi:
+            log.info(f"  [glob] {rendered} → {len(matches)}개 파일")
+            return matches
         if len(matches) > 1:
             names = [m.name for m in matches]
             log.warning(f"  [glob] {rendered} → {len(matches)}개 매칭, 최신 파일 사용: {names}")
@@ -807,18 +812,29 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
     ts = time.time()
     t = cfg.get("timeout", tmo)
     timer = None
+    is_multi = cfg.get("multi", False)
     try:
-        path = _resolve_path(base_path, cfg["file"], yyyymm)
+        if is_multi:
+            paths = _resolve_path(base_path, cfg["file"], yyyymm, multi=True)
+            path = paths[0]  # 레지스트리/로그용 대표 파일
+            file_label = f"{len(paths)}개 파일"
+            # DuckDB read_csv에 glob 패턴 전달용
+            glob_pattern = str(base_path / cfg["file"].format(yyyymm=yyyymm))
+        else:
+            path = _resolve_path(base_path, cfg["file"], yyyymm)
+            glob_pattern = None
+            file_label = path.name
 
         # 레지스트리 체크 (force 또는 테이블별 overwrite 시 건너뜀)
         if not force and not cfg.get("overwrite", False):
-            prev = _check_registry(con, name, path.name)
+            reg_name = file_label if is_multi else path.name
+            prev = _check_registry(con, name, reg_name)
             if prev:
                 cnt, loaded_at = prev
-                log.info(f"  [Skip] {_pad(name, 30)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
+                log.info(f"  [Skip] {_pad(name, 30)} 이미 로드됨 ({reg_name}, {cnt:,}건, {loaded_at})")
                 return "skipped"
 
-        log.info(f"  [Read] {_pad(name, 30)} ← {path.name}")
+        log.info(f"  [Read] {_pad(name, 30)} ← {file_label}")
 
         # 타임아웃
         _interrupted = threading.Event()
@@ -831,8 +847,9 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
             timer.daemon = True
             timer.start()
 
-        # DuckDB 읽기
-        cnt, tmp_table = _read_native(con, path, name, cfg, yyyymm)
+        # DuckDB 읽기 (multi면 glob 패턴으로 전달)
+        read_path = Path(glob_pattern) if glob_pattern else path
+        cnt, tmp_table = _read_native(con, read_path, name, cfg, yyyymm)
         if timer:
             timer.cancel()
 
@@ -841,7 +858,8 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
             _upsert_from_tmp(con, name, tmp_table, yyyymm, cfg.get("month_col"))
 
         log.info(f"  [Read] {_pad(name, 30)} {cnt:>12,}건  ({time.time()-ts:.1f}초)")
-        _update_registry(con, name, path.name, cnt)
+        reg_name = file_label if is_multi else path.name
+        _update_registry(con, name, reg_name, cnt)
         return "loaded"
 
     except Exception as e:
