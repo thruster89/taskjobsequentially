@@ -436,7 +436,7 @@ def _resolve_path(base, file_template, yyyymm, multi=False):
     multi=True: 매칭된 파일 전체 리스트 반환.
     multi=False: 최신 1개만 반환 (기본).
     """
-    rendered = file_template.format(yyyymm=yyyymm)
+    rendered = _replace_params(file_template.format(yyyymm=yyyymm), _sql_params)
     is_glob = "*" in rendered or "?" in rendered
 
     if is_glob:
@@ -981,7 +981,7 @@ def do_load(con, yyyymm, tables: dict, timeout: int = None, force: bool = False)
     loaded, failed = [], []
     tmo = timeout if timeout is not None else LOAD_TIMEOUT
 
-    tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
+    tables = {_replace_params(k.replace("{yyyymm}", yyyymm), _sql_params): v for k, v in tables.items()}
     _ensure_registry(con)
 
     # native (pipe, csv, fwf+native) / other (fwf, sas7bdat, oracle) 분리
@@ -1220,7 +1220,7 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
     if not run_all:
         log.info(f"[{name}] 선택 단계: {stages}")
     if only_tables:
-        only_tables = [t.replace("{yyyymm}", yyyymm) for t in only_tables]
+        only_tables = [_replace_params(t.replace("{yyyymm}", yyyymm), _sql_params) for t in only_tables]
         log.info(f"[{name}] 선택 테이블: {only_tables}")
     log.info("=" * 60)
     t0 = time.time()
@@ -1263,7 +1263,7 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
                 log.info(f"[{name}] TABLES 없음 — LOAD 스킵")
             else:
                 # TABLES 키의 {yyyymm} 치환 (only_tables 비교 전에 수행)
-                tables = {k.replace("{yyyymm}", yyyymm): v for k, v in tables.items()}
+                tables = {_replace_params(k.replace("{yyyymm}", yyyymm), _sql_params): v for k, v in tables.items()}
                 if only_tables:
                     unknown = set(only_tables) - set(tables)
                     if unknown:
