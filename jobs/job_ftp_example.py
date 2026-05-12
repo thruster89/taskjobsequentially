@@ -57,13 +57,15 @@ def download_ftp(cfg, yyyymm, patterns=None, excludes=None):
         log.info(f"  [FTP] 전체 파일: {len(files)}개")
 
         if patterns:
+            import fnmatch
             log.info(f"  [FTP] 패턴 필터: {patterns}")
             files = [f for f in files
-                     if any(p in f for p in patterns)]
+                     if any(fnmatch.fnmatch(f, p) for p in patterns)]
         if excludes:
+            import fnmatch
             log.info(f"  [FTP] 제외 필터: {excludes}")
             files = [f for f in files
-                     if not any(x in f for x in excludes)]
+                     if not any(fnmatch.fnmatch(f, x) for x in excludes)]
 
         log.info(f"  [FTP] 대상 파일: {len(files)}개")
         for i, fname in enumerate(files, 1):
