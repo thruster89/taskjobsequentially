@@ -58,20 +58,26 @@ def download_ftp(cfg, yyyymm, patterns=None, excludes=None, latest=False):
         log.info(f"  [FTP] 전체 파일: {len(files)}개")
 
         import fnmatch
+        # * ? 없으면 부분 문자열 매칭으로 자동 변환 (하위호환)
+        def _to_glob(p):
+            return p if ("*" in p or "?" in p) else f"*{p}*"
+
         if patterns:
-            log.info(f"  [FTP] 패턴 필터: {patterns}")
+            globs = [_to_glob(p) for p in patterns]
+            log.info(f"  [FTP] 패턴 필터: {globs}")
             files = [f for f in files
-                     if any(fnmatch.fnmatch(f, p) for p in patterns)]
+                     if any(fnmatch.fnmatch(f, g) for g in globs)]
         if excludes:
-            log.info(f"  [FTP] 제외 필터: {excludes}")
+            ex_globs = [_to_glob(x) for x in excludes]
+            log.info(f"  [FTP] 제외 필터: {ex_globs}")
             files = [f for f in files
-                     if not any(fnmatch.fnmatch(f, x) for x in excludes)]
+                     if not any(fnmatch.fnmatch(f, g) for g in ex_globs)]
 
         if latest and patterns:
-            # 패턴별 최신 파일 1개만 (이름순 정렬 마지막)
             latest_files = []
             for p in patterns:
-                matched = sorted(f for f in files if fnmatch.fnmatch(f, p))
+                g = _to_glob(p)
+                matched = sorted(f for f in files if fnmatch.fnmatch(f, g))
                 if matched:
                     latest_files.append(matched[-1])
                     log.info(f"  [FTP] latest: {p} → {matched[-1]}")
