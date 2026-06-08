@@ -26,14 +26,15 @@ DESC = "FTP 다운로드 → 로드 예시"
 from ftp_config import FTP_IFRS4
 
 
-def download_ftp(cfg, yyyymm, patterns=None, excludes=None):
+def download_ftp(cfg, yyyymm, patterns=None, excludes=None, latest=False):
     """FTP에서 파일 다운로드 → data/{yyyymm}/
 
     cfg      : FTP_IFRS4 등 접속 정보 dict
-    patterns : 다운받을 파일명 패턴 리스트 (None이면 전체)
-               예: ["btLtrJ930_020_", "RS100_"]
+    patterns : 다운받을 파일명 패턴 리스트 (None이면 전체). glob 와일드카드 지원.
+               예: ["btLtrJ930_020_*", "RS103_*"]
     excludes : 제외할 패턴 리스트
-               예: ["_all_"]
+               예: ["*_all_*"]
+    latest   : True면 패턴별 최신 파일 1개만 다운로드 (이름순 정렬 기준)
     """
     host = cfg["host"]
     port = cfg.get("port", 21)
@@ -56,16 +57,25 @@ def download_ftp(cfg, yyyymm, patterns=None, excludes=None):
         files = ftp.nlst()
         log.info(f"  [FTP] 전체 파일: {len(files)}개")
 
+        import fnmatch
         if patterns:
-            import fnmatch
             log.info(f"  [FTP] 패턴 필터: {patterns}")
             files = [f for f in files
                      if any(fnmatch.fnmatch(f, p) for p in patterns)]
         if excludes:
-            import fnmatch
             log.info(f"  [FTP] 제외 필터: {excludes}")
             files = [f for f in files
                      if not any(fnmatch.fnmatch(f, x) for x in excludes)]
+
+        if latest and patterns:
+            # 패턴별 최신 파일 1개만 (이름순 정렬 마지막)
+            latest_files = []
+            for p in patterns:
+                matched = sorted(f for f in files if fnmatch.fnmatch(f, p))
+                if matched:
+                    latest_files.append(matched[-1])
+                    log.info(f"  [FTP] latest: {p} → {matched[-1]}")
+            files = latest_files
 
         log.info(f"  [FTP] 대상 파일: {len(files)}개")
         for i, fname in enumerate(files, 1):
