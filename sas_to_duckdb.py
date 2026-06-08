@@ -284,9 +284,11 @@ def check(con, label, query, expect="zero"):
       int       — 정확히 N건이어야 정상
     """
     query = _replace_params(query, _sql_params)
+    log.debug(f"  [check] {label}: {query[:300]}")
     try:
         row = con.execute(query).fetchone()
     except Exception as e:
+        log.warning(f"  [check] 실패 SQL: {query[:300]}")
         if "not found" in str(e).lower() or "does not exist" in str(e).lower():
             log.warning(f"  [--] {_pad(label, 40)}  테이블 없음 — 건너뜀")
             return False
