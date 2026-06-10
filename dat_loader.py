@@ -599,11 +599,6 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     total_cols = max(actual_cols, n_cols)
     pad = len(str(total_cols - 1)) if total_cols > 0 else 1
 
-    # columns 정의: 전부 VARCHAR (안전), 타입 변환은 SELECT에서 TRY_CAST
-    col_defs = ", ".join(
-        f"'column{str(i).zfill(pad)}': 'VARCHAR'" for i in range(total_cols)
-    )
-
     if actual_cols != n_cols:
         log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개")
 
@@ -662,8 +657,8 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 delim        = '{delimiter}',
                 header       = false,
                 encoding     = '{read_enc}',
-                auto_detect  = false,
-                columns      = {{{col_defs}}})
+                all_varchar  = true,
+                sample_size  = 0)
         """
         monitor = threading.Thread(target=_progress_monitor,
                                    args=(file_size, time.time()),
