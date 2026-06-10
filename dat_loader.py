@@ -599,20 +599,15 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
     total_cols = max(actual_cols, n_cols)
     pad = len(str(total_cols - 1)) if total_cols > 0 else 1
 
-    # columns 정의: numeric/bigint는 해당 타입, 나머지 VARCHAR
-    col_def_parts = []
-    for i in range(total_cols):
-        cname = f"column{str(i).zfill(pad)}"
-        if i < n_cols and col_names[i] in numeric_set:
-            col_def_parts.append(f"'{cname}': '{numeric_type[col_names[i]]}'")
-        else:
-            col_def_parts.append(f"'{cname}': 'VARCHAR'")
-    col_defs = ", ".join(col_def_parts)
+    # columns 정의: 전부 VARCHAR (안전), 타입 변환은 SELECT에서 TRY_CAST
+    col_defs = ", ".join(
+        f"'column{str(i).zfill(pad)}': 'VARCHAR'" for i in range(total_cols)
+    )
 
     if actual_cols != n_cols:
         log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개")
 
-    # SELECT 표현식: 타입은 columns에서 이미 지정 → TRY_CAST 불필요
+    # SELECT 표현식: select_cols 지정 시 해당 컬럼만, numeric/bigint는 TRY_CAST
     use_cols = select_cols if select_cols else col_names
     use_set = set(use_cols)
     exprs = []
@@ -621,6 +616,9 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
             continue
         src = f"column{str(i).zfill(pad)}"
         base = f"TRIM({src})" if trim else src
+        if name in numeric_set:
+            cast_type = numeric_type[name]
+            base = f"TRY_CAST({base} AS {cast_type})"
         exprs.append(f"{base} AS {name}")
     select_clause = ", ".join(exprs)
     # 읽을 파일 크기 (gz면 원본 크기를 알 수 없으므로 압축 크기 사용)
@@ -664,6 +662,7 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 delim        = '{delimiter}',
                 header       = false,
                 encoding     = '{read_enc}',
+                auto_detect  = false,
                 columns      = {{{col_defs}}})
         """
         monitor = threading.Thread(target=_progress_monitor,
