@@ -24,8 +24,6 @@ Ctrl+C, FTP 등 모든 기능이 정상 동작.
   LOAD_TIMEOUT = 3600 # 테이블당 타임아웃(초) (선택)
 """
 
-print("[runset] 시작")
-
 import sys
 import time
 import logging
@@ -82,19 +80,15 @@ def wait_until(target_str):
 
 
 def main():
-    # sas_to_duckdb.py는 여기서 import (모듈 로드 시 duckdb/pandas 등 무거운 import 방지)
-    print("[runset] sas_to_duckdb 로딩 중...")
     from sas_to_duckdb import (
         load_job_module, run_job, setup_logger,
         _shutdown, _get_total_ram, ROOT,
     )
     import duckdb
-    print("[runset] 로딩 완료")
 
     global log
     log = setup_logger()
 
-    print("[runset] argparse 시작")
     parser = argparse.ArgumentParser(
         description="런셋 — 여러 JOB 연속 실행",
         formatter_class=argparse.RawTextHelpFormatter,

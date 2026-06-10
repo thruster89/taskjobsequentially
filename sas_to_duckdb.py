@@ -176,7 +176,8 @@ def _check_registry(con, table_name, file_name):
             WHERE table_name = ? AND file_name = ?
         """, [table_name, file_name]).fetchone()
         return row
-    except Exception:
+    except Exception as e:
+        log.debug(f"    레지스트리 조회 실패 ({table_name}): {e}")
         return None
 
 
@@ -198,7 +199,12 @@ def sql(con, label, query, params=None):
     ${SDM}, ${LM} 등 파라미터 자동 치환."""
     query = _replace_params(query, _sql_params)
     t = time.time()
-    con.execute(query, params or [])
+    try:
+        con.execute(query, params or [])
+    except Exception as e:
+        log.error(f"  {_pad(label, 40)}  SQL 에러: {e}")
+        log.debug(f"       SQL: {query[:500]}")
+        raise
     m = re.search(r"CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
                   query, re.IGNORECASE)
     if m:
@@ -288,10 +294,12 @@ def check(con, label, query, expect="zero"):
     try:
         row = con.execute(query).fetchone()
     except Exception as e:
-        log.warning(f"  [check] 실패 SQL: {query[:300]}")
-        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+        err_msg = str(e)
+        if "not found" in err_msg.lower() or "does not exist" in err_msg.lower():
             log.warning(f"  [--] {_pad(label, 40)}  테이블 없음 — 건너뜀")
             return False
+        log.error(f"  [NG] {_pad(label, 40)}  SQL 에러: {err_msg}")
+        log.debug(f"       SQL: {query[:500]}")
         raise
     cnt = row[0] if row else 0
     if expect == "zero":
@@ -318,9 +326,12 @@ def check_sum(con, label, query):
     try:
         row = con.execute(query).fetchone()
     except Exception as e:
-        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+        err_msg = str(e)
+        if "not found" in err_msg.lower() or "does not exist" in err_msg.lower():
             log.warning(f"  [--] {_pad(label, 40)}  테이블 없음 — 건너뜀")
             return
+        log.error(f"  [NG] {_pad(label, 40)}  SQL 에러: {err_msg}")
+        log.debug(f"       SQL: {query[:500]}")
         raise
     cols = [d[0] for d in con.description]
     if not row:
@@ -367,9 +378,12 @@ def check_diff(con, label, query_a, query_b, group_cols, sum_col,
     try:
         rows = con.execute(diff_sql).fetchall()
     except Exception as e:
-        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+        err_msg = str(e)
+        if "not found" in err_msg.lower() or "does not exist" in err_msg.lower():
             log.warning(f"  [--] {_pad(label, 40)}  테이블 없음 — 건너뜀")
             return True
+        log.error(f"  [NG] {_pad(label, 40)}  SQL 에러: {err_msg}")
+        log.debug(f"       SQL: {diff_sql[:500]}")
         raise
     total = len(rows)
     ok = total == 0
@@ -799,7 +813,8 @@ def _fallback_pandas(con, path, name, cfg, yyyymm):
                     cnt += len(chunk)
                     del chunk
                 break
-            except UnicodeDecodeError:
+            except UnicodeDecodeError as ue:
+                log.debug(f"    pandas 인코딩 {enc} 실패: {ue}")
                 continue
         else:
             raise RuntimeError(f"pandas 인코딩 실패 (시도: {pd_encs})")
@@ -844,7 +859,8 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
             def _do_interrupt():
                 _interrupted.set()
                 try: con.interrupt()
-                except Exception: pass
+                except Exception as ie:
+                    log.debug(f"  [Read] {name} interrupt 실패: {ie}")
             timer = threading.Timer(t, _do_interrupt)
             timer.daemon = True
             timer.start()
@@ -892,9 +908,10 @@ def _load_native_one(con, name, cfg, base_path, yyyymm, tmo, force):
             log.warning(f"  [Read] {_pad(name, 30)} DuckDB 타임아웃 ({elapsed:.0f}초) → pandas 폴백")
         else:
             log.warning(f"  [Read] {_pad(name, 30)} DuckDB 실패({e}) → pandas 폴백")
-        # 커넥션 정리
+        # 커넥션 정리 (interrupt 후 잔여 에러 소진)
         try: con.execute("SELECT 1")
-        except Exception: pass
+        except Exception as ce:
+            log.debug(f"  [Read] {name} 커넥션 정리: {ce}")
 
         # pandas 폴백
         try:
@@ -924,8 +941,8 @@ def _load_other_tables(con, other_tables, base_path, yyyymm, tmo, force, loaded,
                     log.info(f"  [Skip] {_pad(name, 30)} 이미 로드됨 ({path.name}, {cnt:,}건, {loaded_at})")
                     loaded.append(name)
                     skip.append(name)
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"  [Skip] {name} 레지스트리 체크 실패 (무시): {e}")
         other_tables = {k: v for k, v in other_tables.items() if k not in skip}
 
     if not other_tables:
@@ -1288,6 +1305,7 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
                     job_mod.logic(con, yyyymm)
                 except Exception as e:
                     log.error(f"[{name}] LOGIC 실패 — 다음 단계로 계속 진행: {e}")
+                    log.debug(f"[{name}] LOGIC traceback:", exc_info=True)
 
         # 3. VALIDATE
         if run_all or "validate" in stages:
@@ -1299,6 +1317,7 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
                     log.info("─" * 60)
                 except Exception as e:
                     log.error(f"[{name}] VALIDATE 실패 — 다음 단계로 계속 진행: {e}")
+                    log.debug(f"[{name}] VALIDATE traceback:", exc_info=True)
 
         # 4. EXPORT
         if run_all or "export" in stages:
@@ -1315,8 +1334,8 @@ def run_job(con, job_mod, yyyymm, skip_load=False, stages=None,
         for alias in attached:
             try:
                 con.execute(f"DETACH {alias}")
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug(f"[{name}] detach {alias} 실패 (무시): {e}")
 
     log.info(f"[{name}] 완료  소요: {time.time()-t0:.1f}초")
 

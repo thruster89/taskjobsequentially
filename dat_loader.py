@@ -184,6 +184,11 @@ def decompress_gz(path: Path):
     이미 변환된 파일이 gz보다 새로우면 스킵.
     gz가 아닌 비-utf8 파일도 변환 대상.
     """
+    # 이미 utf8.dat이면 그대로 반환 (이중 변환 방지)
+    if str(path).endswith(".utf8.dat"):
+        log.info(f"    이미 utf-8 변환 파일: {path.name}")
+        return path
+
     # 출력 파일명 결정
     if path.suffix.lower() == ".gz":
         if path.name.lower().endswith(".dat.gz"):
@@ -592,14 +597,19 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
         log.info(f"    샘플 컬럼 수 감지 실패({e}), 정의 {n_cols}개 사용")
 
     total_cols = max(actual_cols, n_cols)
+    pad = len(str(total_cols - 1)) if total_cols > 0 else 1
+
+    # columns 정의: 전부 VARCHAR (안전), 타입 변환은 SELECT에서 TRY_CAST
+    col_defs = ", ".join(
+        f"'column{str(i).zfill(pad)}': 'VARCHAR'" for i in range(total_cols)
+    )
+
     if actual_cols != n_cols:
         log.info(f"    실제 컬럼 {actual_cols}개, 정의 {n_cols}개")
 
-    # SELECT 표현식: select_cols 지정 시 해당 컬럼만, 미지정 시 전체
+    # SELECT 표현식: select_cols 지정 시 해당 컬럼만, numeric/bigint는 TRY_CAST
     use_cols = select_cols if select_cols else col_names
     use_set = set(use_cols)
-    # DuckDB auto_detect 컬럼명: 자릿수에 맞춰 제로패딩 (10개 미만→column0, 100개 이상→column000)
-    pad = len(str(total_cols - 1)) if total_cols > 0 else 1
     exprs = []
     for i, name in enumerate(col_names):
         if name not in use_set:
@@ -652,7 +662,8 @@ def read_pipe_duckdb(con, path: Path, col_names: list, numeric: list = None,
                 delim        = '{delimiter}',
                 header       = false,
                 encoding     = '{read_enc}',
-                all_varchar  = true)
+                auto_detect  = false,
+                columns      = {{{col_defs}}})
         """
         monitor = threading.Thread(target=_progress_monitor,
                                    args=(file_size, time.time()),
